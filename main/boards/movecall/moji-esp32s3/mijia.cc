@@ -464,7 +464,8 @@ bool DecodeApiResponse(const std::string& response, const std::string& signed_no
 
 bool RequestHomes(const std::string& user_agent, const std::string& service_token,
                   const std::string& c_user_id, const std::string& device_id,
-                  const std::string& ssecurity, std::string& homes_json, std::string& error) {
+                  const std::string& ssecurity, std::string& homes_json, std::string& error,
+                  const std::string& target_home_id = "") {
     static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
     static constexpr char kApiUrl[] = "https://api.mijia.tech/app/v2/homeroom/gethome_merged";
 
@@ -594,24 +595,54 @@ bool RequestHomes(const std::string& user_agent, const std::string& service_toke
     return DecodeApiResponse(response.body, signed_nonce, homes_json, error);
 }
 
-ToolResult ListHomes() {
+// 定义一个米家凭证结构体
+struct MijiaAuthCredentials {
+    std::string service_token;
+    std::string c_user_id;
+    std::string device_id;
+    std::string user_agent;
+    std::string ssecurity;
+};
+
+// 公共的凭证加载与校验函数
+// 如果未登录，直接返回带有错误信息的 std::unexpected；成功则返回凭证对象
+std::expected<MijiaAuthCredentials, ToolResult> LoadMijiaAuth() {
     Settings auth("mijia_auth");
-    const std::string service_token = auth.GetString("service_tok");
-    const std::string c_user_id = auth.GetString("cuser_id");
-    const std::string device_id = auth.GetString("device_id");
-    const std::string user_agent = auth.GetString("user_agent");
-    const std::string ssecurity = auth.GetString("ssecurity");
-    if (service_token.empty() || c_user_id.empty() || device_id.empty() || user_agent.empty() ||
-        ssecurity.empty()) {
-        return std::unexpected("尚未登录米家，请先调用 self.mijia.login 完成扫码登录");
+    MijiaAuthCredentials creds{
+        auth.GetString("service_tok"),
+        auth.GetString("cuser_id"),
+        auth.GetString("device_id"),
+        auth.GetString("user_agent"),
+        auth.GetString("ssecurity")
+    };
+
+    if (creds.service_token.empty() || creds.c_user_id.empty() || 
+        creds.device_id.empty() || creds.user_agent.empty() || 
+        creds.ssecurity.empty()) {
+        return std::unexpected(std::unexpected("尚未登录米家，请先调用 self.mijia.login 完成扫码登录"));
     }
+
+    return creds;
+}
+
+// 凭证区域结束
+
+ToolResult ListHomes() {
+// 1. 一行代码完成鉴权检查与加载
+    auto auth_result = LoadMijiaAuth();
+    if (!auth_result) {
+        return auth_result.error(); // 直接返回登录提示
+    }
+    const auto& creds = *auth_result; // 获取凭证：creds.service_token, creds.user_agent 等
 
     std::string response;
     std::string error;
-    if (!RequestHomes(user_agent, service_token, c_user_id, device_id, ssecurity, response,
-                      error)) {
+    // 使用 creds 里的字段发起请求
+    if (!RequestHomes(creds.user_agent, creds.service_token, creds.c_user_id, 
+                      creds.device_id, creds.ssecurity, response, error)) {
         return std::unexpected(error);
     }
+
     std::unique_ptr<cJSON, decltype(&cJSON_Delete)> result(ParseMijiaJson(response), cJSON_Delete);
     if (!result) {
         return std::unexpected("无法解析米家家庭列表响应");
@@ -675,8 +706,6 @@ ToolResult ListHomes() {
         
         cJSON_AddItemToArray(slim_homes_array, slim_home);
     }
-
-
    
     // std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(homes),
     //                                                         std::free);
@@ -722,6 +751,116 @@ ToolResult ListHomesOnDedicatedStack() {
     vSemaphoreDelete(completed);
     return std::move(context.result);
 }
+
+ToolResult GetDevicesListInternal(const std::string& target_home_id) {
+
+    // 1. 同样一行代码完成鉴权检查
+    auto auth_result = LoadMijiaAuth();
+    if (!auth_result) {
+        return auth_result.error();
+    }
+    const auto& creds = *auth_result;
+
+    std::string response;
+    std::string error;
+    // 调用RequestHomes获取设备列表 
+    if (!RequestHomes(creds.user_agent, creds.service_token, creds.c_user_id, 
+                        creds.device_id, creds.ssecurity, response, error, target_home_id)) {
+        return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
+    }
+
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> result(ParseMijiaJson(response), cJSON_Delete);
+    if (!result) {
+        return std::unexpected("无法解析米家设备列表响应");
+    }
+
+    const cJSON* result_data = cJSON_GetObjectItemCaseSensitive(result.get(), "result");
+    const cJSON* code = cJSON_GetObjectItemCaseSensitive(result.get(), "code");
+    if (!cJSON_IsNumber(code) || JsonCode(result.get() ) != 0 || !cJSON_IsObject(result_data)) {
+        std::string message = JsonString(result.get(), "message");
+        if (message.empty()) message = "米家设备列表请求失败";
+        return std::unexpected(message);
+    }
+
+    // 假设返回的设备列表在 "list" 或 "devices" 数组中（根据实际米家 API 结构调整）
+    const cJSON* devices = cJSON_GetObjectItemCaseSensitive(result_data, "list");
+    if (!cJSON_IsArray(devices)) {
+        devices = cJSON_GetObjectItemCaseSensitive(result_data, "devices"); // 兼容不同字段名
+    }
+    if (!cJSON_IsArray(devices)) {
+        return std::unexpected("米家设备列表响应缺少设备数组");
+    }
+
+    // === 【核心优化：数据瘦身】只提取大模型和 MCP 需要的关键字段 ===
+    cJSON* slim_devices_array = cJSON_CreateArray();
+    cJSON* dev_item = NULL;
+
+    cJSON_ArrayForEach(dev_item, devices) {
+        cJSON* d_did = cJSON_GetObjectItemCaseSensitive(dev_item, "did");
+        cJSON* d_name = cJSON_GetObjectItemCaseSensitive(dev_item, "name");
+        cJSON* d_model = cJSON_GetObjectItemCaseSensitive(dev_item, "model");
+        cJSON* d_room_id = cJSON_GetObjectItemCaseSensitive(dev_item, "room_id");
+        cJSON* d_status = cJSON_GetObjectItemCaseSensitive(dev_item, "status"); // 在线状态等
+
+        cJSON* slim_dev = cJSON_CreateObject();
+        if (d_did && d_did->valuestring) cJSON_AddStringToObject(slim_dev, "did", d_did->valuestring);
+        if (d_name && d_name->valuestring) cJSON_AddStringToObject(slim_dev, "name", d_name->valuestring);
+        if (d_model && d_model->valuestring) cJSON_AddStringToObject(slim_dev, "model", d_model->valuestring);
+        if (d_room_id) {
+            if (cJSON_IsString(d_room_id) && d_room_id->valuestring) {
+                cJSON_AddStringToObject(slim_dev, "room_id", d_room_id->valuestring);
+            } else if (cJSON_IsNumber(d_room_id)) {
+                cJSON_AddStringToObject(slim_dev, "room_id", std::to_string((long long)d_room_id->valuedouble).c_str());
+            }
+        }
+        if (cJSON_IsNumber(d_status)) cJSON_AddNumberToObject(slim_dev, "status", d_status->valueint);
+
+        cJSON_AddItemToArray(slim_devices_array, slim_dev);
+    }
+
+    std::unique_ptr<char, decltype(&std::free)> devices_string(cJSON_PrintUnformatted(slim_devices_array), std::free);
+    cJSON_Delete(slim_devices_array);
+
+    if (!devices_string) {
+        return std::unexpected("无法序列化精简后的米家设备列表");
+    }
+    return std::string(devices_string.get());
+}
+
+ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id) {
+    struct TaskContext {
+        std::string home_id;
+        SemaphoreHandle_t completed;
+        ToolResult result;
+    };
+
+    SemaphoreHandle_t completed = xSemaphoreCreateBinary();
+    if (completed == nullptr) {
+        return std::unexpected("无法创建米家设备列表任务同步对象");
+    }
+
+    TaskContext context{home_id, completed, std::unexpected("米家设备列表任务未完成")};
+    const BaseType_t task_status = xTaskCreate(
+        [](void* arg) {
+            auto* ctx = static_cast<TaskContext*>(arg);
+            ctx->result = GetDevicesListInternal(ctx->home_id);
+            ESP_LOGI(TAG, "Mijia devices task stack remaining: %u bytes",
+                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            xSemaphoreGive(ctx->completed);
+            vTaskDelete(nullptr);
+        },
+        "mijia_devices", 24576, &context, 4, nullptr);
+
+    if (task_status != pdPASS) {
+        vSemaphoreDelete(completed);
+        return std::unexpected("无法创建米家设备列表任务");
+    }
+
+    xSemaphoreTake(completed, portMAX_DELAY);
+    vSemaphoreDelete(completed);
+    return std::move(context.result);
+}
+
 
 std::string RandomString(size_t length, const char* alphabet) {
     std::string result(length, '\0');
@@ -1142,9 +1281,27 @@ void InitializeMojiMijiaTool(Display* display) {
         "在屏幕上显示小米账号二维码，用户使用米家 App 扫码后完成登录。登录凭据会保存在设备 NVS 中。"
         "这是用户主动操作，不要由 AI 自行调用。",
         PropertyList(), [](const PropertyList&) -> ToolResult { return mijia_login.Start(); });
+        
     McpServer::GetInstance().AddTool(
         "self.mijia.list_homes",
-        "列出当前已登录米家账号的家庭信息，包括家庭 ID、名称和房间。需要先完成米家扫码登录。",
+        "列出当前已登录米家账号的家庭列表。需要先完成米家扫码登录。",
         PropertyList(),
         [](const PropertyList&) -> ToolResult { return ListHomesOnDedicatedStack(); });
+
+
+    
+    McpServer::GetInstance().AddTool(
+        "self.mijia.get_devices_list",
+        "获取米家设备列表。可选参数 home_id：传入则筛选该家庭下的设备，不传则获取全部。",
+
+        []() {
+            PropertyList p;
+            p.AddProperty(Property("home_id", kPropertyTypeString, std::string("")));
+            return p;
+        }(), // 这是一个立即执行的 Lambda，直接返回构造好的 PropertyList
+
+        [](const PropertyList& args) -> ToolResult {
+            std::string home_id = args["home_id"].value<std::string>();
+            return GetDevicesListOnDedicatedStack(home_id);
+        });
 }
