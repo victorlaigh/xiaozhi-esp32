@@ -1003,10 +1003,10 @@ file(GLOB BOARD_SOURCES
 if(CONFIG_BOARD_TYPE_MOVECALL_MOJI_ESP32S3)
     list(REMOVE_ITEM BOARD_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/movecall/moji-esp32s3/weather_icon_font.cc"
-        "${CMAKE_CURRENT_SOURCE_DIR}/boards/movecall/moji-esp32s3/mcp.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/movecall/moji-esp32s3/mijia.cc"
     )
     list(APPEND SOURCES "boards/movecall/moji-esp32s3/weather_icon_font.cc")
-    list(APPEND SOURCES "boards/movecall/moji-esp32s3/mcp.cc")
+    list(APPEND SOURCES "boards/movecall/moji-esp32s3/mijia.cc")
 endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
@@ -1175,6 +1175,9 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 set(MAIN_PRIV_REQUIRES_EXTRA "")
+if(CONFIG_BOARD_TYPE_MOVECALL_MOJI_ESP32S3)
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif2022__esp_emote_gfx)
+endif()
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET AND CONFIG_XIAOZHI_ETH_PHY_IP101)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif__ip101)
 endif()
@@ -1230,6 +1233,13 @@ idf_component_register(SRCS ${SOURCES}
                         xiaozhi-fonts
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
+
+if(CONFIG_BOARD_TYPE_MOVECALL_MOJI_ESP32S3)
+    idf_component_get_property(EMOTE_GFX_COMPONENT_DIR espressif2022__esp_emote_gfx COMPONENT_DIR)
+    target_include_directories(${COMPONENT_LIB} PRIVATE
+        "${EMOTE_GFX_COMPONENT_DIR}/src/lib/qrcode"
+    )
+endif()
 
 # Keep project-owned C++ on GNU C++23. ESP-IDF 6 may default to a newer
 # dialect; pin the baseline so main/ does not depend on it.

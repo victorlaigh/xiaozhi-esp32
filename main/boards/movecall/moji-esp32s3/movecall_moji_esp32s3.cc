@@ -39,7 +39,9 @@
 
 #define TAG "MovecallMojiESP32S3"
 
-void InitializeMojiMcpTools(Display* display);
+void InitializeMojiMijiaTool(Display* display);
+void HideMojiMijiaLoginQr();
+// 待机时还没登录也隐藏QR用
 
 LV_FONT_DECLARE(font_noto_sans_basic_20_4);
 LV_FONT_DECLARE(font_noto_sans_basic_30_4);
@@ -231,6 +233,7 @@ private:
                 }
             }
         }
+        // 下面这几个设置颜色而已
         if (city_label_ != nullptr) {
             lv_obj_set_style_text_color(city_label_, secondary, 0);
         }
@@ -268,13 +271,11 @@ private:
         if (date_label_ != nullptr) {
             lv_obj_align(date_label_, LV_ALIGN_TOP_MID, 0,
                          standby_style_ == MojiStandbyStyle::Weather ? 58 : 56);
-                         //64改56
         }
 
         if (weather_card_ != nullptr) {
-            lv_obj_align(weather_card_, LV_ALIGN_TOP_MID, 0, 156);
-            lv_obj_set_size(weather_card_, LV_HOR_RES - 48,
-                            standby_style_ == MojiStandbyStyle::Weather ? 70 : 62);
+            lv_obj_align(weather_card_, LV_ALIGN_TOP_MID, 0, 155);
+            lv_obj_set_size(weather_card_, LV_HOR_RES - 50, 62);
         }
 
         if (weather_icon_label_ != nullptr) {
@@ -283,8 +284,6 @@ private:
             lv_obj_align(weather_icon_label_, LV_ALIGN_LEFT_MID, 20, 0);
         }
         if (high_low_label_ != nullptr) {
-            // lv_obj_align(high_low_label_, LV_ALIGN_TOP_MID, 0,
-                        // standby_style_ == MojiStandbyStyle::Weather ? 194 : 190);
                 lv_obj_align(high_low_label_, LV_ALIGN_TOP_MID, 0, 188);
         }
         if (weather_card_ != nullptr) {
@@ -411,23 +410,12 @@ public:
 
             time_label_ = lv_label_create(screen);
             lv_obj_set_width(time_label_, LV_HOR_RES - 24);
-            // lv_obj_set_style_text_font(time_label_, &font_noto_sans_basic_30_4, 0);
-            // 30 表示当前使用 30px 的字库。Moji 这边只声明了 20 和 30 两种 Noto 字体
-            // 要加尺寸的话,字体在managed_components\78_xiaozhi-fonts\manifest.json的text_profies中声明
-            // 再运行组件的build.py生成对应字体后在Moji文件声明并使用
             lv_obj_set_style_text_font(time_label_, &lv_font_montserrat_48, 0);
             // 创建时间标签时，使用 Montserrat 字体，大小为 48px
-            //lv_obj_set_style_text_color(time_label_, lv_color_hex(0xF2F 4F7), 0);
-            //lv_obj_set_style_text_letter_space(time_label_, 1, 0);
-            //上面两行在ApplyMojiStyle()中设置了颜色和字间距 自动生成的
-
             lv_obj_set_style_text_align(time_label_, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_letter_space(time_label_, 1, 0);
             lv_label_set_text(time_label_, "--:--");
             lv_obj_align(time_label_, LV_ALIGN_CENTER, 5, -5);
-
-            //// lv_obj_align(time_label_, LV_ALIGN_TOP_MID, 0, 88);
-            // 大号时间标签位置由 ApplyMojiStyle() 按待机样式统一调整
 
             weather_icon_label_ = lv_label_create(screen);
             lv_obj_set_width(weather_icon_label_, 36);
@@ -561,6 +549,9 @@ public:
         bool show_standby = emotion != nullptr &&
                             Application::GetInstance().GetDeviceState() == kDeviceStateIdle &&
                             std::strcmp(emotion, "neutral") == 0;
+        if (show_standby) { //待机就隐藏米家登录二维码
+            HideMojiMijiaLoginQr();
+        }
         if (!setup_ui_called_) {
             return result;
         }
@@ -708,7 +699,7 @@ public:
         InitializeCodecI2c();
         InitializeSpi();
         InitializeGc9a01Display();
-        InitializeMojiMcpTools(display_);
+        InitializeMojiMijiaTool(display_);
         InitializeButtons();
         GetBacklight()->RestoreBrightness();
     }
