@@ -1000,6 +1000,14 @@ file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/*.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/*.c
 )
+if(CONFIG_BOARD_TYPE_MOVECALL_MOJI_ESP32S3)
+    list(REMOVE_ITEM BOARD_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/movecall/moji-esp32s3/weather_icon_font.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/movecall/moji-esp32s3/mcp.cc"
+    )
+    list(APPEND SOURCES "boards/movecall/moji-esp32s3/weather_icon_font.cc")
+    list(APPEND SOURCES "boards/movecall/moji-esp32s3/mcp.cc")
+endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
 # Select one audio engine for each chip family
@@ -1218,6 +1226,7 @@ idf_component_register(SRCS ${SOURCES}
                         efuse
                         bt
                         fatfs
+                        esp_http_client
                         xiaozhi-fonts
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )

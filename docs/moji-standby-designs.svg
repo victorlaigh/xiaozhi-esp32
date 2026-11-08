@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="570" viewBox="0 0 1080 570">
+  <defs>
+    <linearGradient id="page" x2="0" y2="1">
+      <stop offset="0" stop-color="#161b26"/>
+      <stop offset="1" stop-color="#0b0e14"/>
+    </linearGradient>
+    <linearGradient id="screen1" x2="0.8" y2="1">
+      <stop stop-color="#202b3c"/>
+      <stop offset="1" stop-color="#080d16"/>
+    </linearGradient>
+    <linearGradient id="screen2" x2="0.8" y2="1">
+      <stop stop-color="#316f9d"/>
+      <stop offset=".48" stop-color="#183d62"/>
+      <stop offset="1" stop-color="#101c36"/>
+    </linearGradient>
+    <linearGradient id="screen3" x2="1" y2="1">
+      <stop stop-color="#23372f"/>
+      <stop offset=".55" stop-color="#101d1c"/>
+      <stop offset="1" stop-color="#0b1115"/>
+    </linearGradient>
+    <linearGradient id="gold" x2="1">
+      <stop stop-color="#f6c981"/>
+      <stop offset="1" stop-color="#d88755"/>
+    </linearGradient>
+    <linearGradient id="skyline" x2="1" y2="1">
+      <stop stop-color="#ffe4a3"/>
+      <stop offset="1" stop-color="#f8a96b"/>
+    </linearGradient>
+    <clipPath id="clip1"><circle cx="190" cy="260" r="151"/></clipPath>
+    <clipPath id="clip2"><circle cx="540" cy="260" r="151"/></clipPath>
+    <clipPath id="clip3"><circle cx="890" cy="260" r="151"/></clipPath>
+    <filter id="shadow" x="-.3" y="-.3" width="1.6" height="1.8">
+      <feGaussianBlur stdDeviation="13"/>
+    </filter>
+  </defs>
+  <rect width="1080" height="570" rx="26" fill="url(#page)"/>
+  <text x="540" y="46" fill="#f3f5f8" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="21" font-weight="600" letter-spacing="2">MOJI · 待机屏幕方向提案</text>
+  <text x="540" y="72" fill="#8f9aaa" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">圆形 240 × 240 屏幕比例示意 · 时间与天气内容为占位数据</text>
+
+  <ellipse cx="190" cy="426" rx="120" ry="15" fill="#000" opacity=".5" filter="url(#shadow)"/>
+  <ellipse cx="540" cy="426" rx="120" ry="15" fill="#000" opacity=".5" filter="url(#shadow)"/>
+  <ellipse cx="890" cy="426" rx="120" ry="15" fill="#000" opacity=".5" filter="url(#shadow)"/>
+
+  <circle cx="190" cy="260" r="155" fill="#080b10" stroke="#38404b" stroke-width="2"/>
+  <g clip-path="url(#clip1)">
+    <circle cx="190" cy="260" r="151" fill="url(#screen1)"/>
+    <circle cx="190" cy="260" r="138" fill="none" stroke="#ffffff" stroke-opacity=".06"/>
+    <text x="190" y="166" fill="#aab6c5" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" letter-spacing="1">深圳  ·  周三</text>
+    <text x="190" y="235" fill="#f6f7fa" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="54" font-weight="300" letter-spacing="-3">10:08</text>
+    <text x="190" y="260" fill="#8390a1" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">11月05日</text>
+    <rect x="116" y="280" width="148" height="1" rx=".5" fill="url(#gold)" opacity=".8"/>
+    <g transform="translate(137 307)" fill="none" stroke="#f4c77c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="8" r="5" fill="#f4c77c" stroke="none"/>
+      <path d="M8 21h23a7 7 0 0 0 .4-14 10 10 0 0 0-19-1"/>
+    </g>
+    <text x="180" y="326" fill="#f4f6f8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">23°</text>
+    <text x="226" y="322" fill="#c6ced8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">多云</text>
+    <text x="190" y="354" fill="#8d9aaa" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">最高 26°  ·  最低 19°</text>
+  </g>
+
+  <circle cx="540" cy="260" r="155" fill="#080b10" stroke="#526a7c" stroke-width="2"/>
+  <g clip-path="url(#clip2)">
+    <circle cx="540" cy="260" r="151" fill="url(#screen2)"/>
+    <circle cx="540" cy="260" r="132" fill="none" stroke="#d7efff" stroke-opacity=".11"/>
+    <circle cx="540" cy="190" r="56" fill="#77c8f5" opacity=".1"/>
+    <circle cx="540" cy="185" r="24" fill="url(#skyline)"/>
+    <path d="M495 208c2-15 17-22 30-16 8-20 38-17 42 5 15-1 24 11 22 22h-88c-5 0-8-5-6-11z" fill="#edf6ff" opacity=".88"/>
+    <text x="540" y="268" fill="#fff" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="52" font-weight="300" letter-spacing="-2">10:08</text>
+    <text x="540" y="291" fill="#c7dceb" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">周三 · 11月05日</text>
+    <rect x="437" y="310" width="206" height="58" rx="18" fill="#e7f4ff" fill-opacity=".12" stroke="#e7f4ff" stroke-opacity=".22"/>
+    <text x="463" y="346" fill="#fff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">23°</text>
+    <text x="512" y="336" fill="#e6f4ff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">多云转晴</text>
+    <text x="512" y="354" fill="#b9d1e4" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10">深圳 · 体感 25°</text>
+  </g>
+
+  <circle cx="890" cy="260" r="155" fill="#080b10" stroke="#465b4d" stroke-width="2"/>
+  <g clip-path="url(#clip3)">
+    <circle cx="890" cy="260" r="151" fill="url(#screen3)"/>
+    <circle cx="890" cy="260" r="133" fill="none" stroke="#c6d6c7" stroke-opacity=".08"/>
+    <circle cx="890" cy="260" r="119" fill="none" stroke="#536b59" stroke-width="1"/>
+    <path d="M803 189a119 119 0 0 1 173-5" fill="none" stroke="url(#gold)" stroke-width="3" stroke-linecap="round"/>
+    <path d="M800 198l8-5M807 178l7 4M822 161l5 7M843 148l3 9M865 142l1 9M916 143l-2 9M940 152l-4 8M960 169l-6 6M974 190l-8 4" stroke="#b3c0b5" stroke-opacity=".5" stroke-width="1.5" stroke-linecap="round"/>
+    <text x="890" y="222" fill="#f3f5ef" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="49" font-weight="300" letter-spacing="-3">10:08</text>
+    <text x="890" y="246" fill="#9eafa2" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" letter-spacing="1">WED · NOV 05</text>
+    <rect x="820" y="265" width="140" height="1" fill="#839486" opacity=".4"/>
+    <g transform="translate(822 286)" fill="none" stroke="#f0c47c" stroke-width="2.5" stroke-linecap="round">
+      <path d="M4 23a10 10 0 0 1 19 0M11 28h20a7 7 0 0 0 .4-14 10 10 0 0 0-18-2"/>
+      <circle cx="15" cy="6" r="4" fill="#f0c47c" stroke="none"/>
+    </g>
+    <text x="872" y="311" fill="#f3f5ef" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="22" font-weight="500">23°</text>
+    <text x="918" y="307" fill="#b4c3b6" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">多云</text>
+    <text x="890" y="345" fill="#87998b" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10">深圳  /  最高 26°  最低 19°</text>
+  </g>
+
+  <text x="190" y="458" fill="#f0f3f7" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="600">01  深色极简</text>
+  <text x="190" y="480" fill="#9da8b7" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">大字时间 · 克制天气 · 清爽易读</text>
+  <text x="540" y="458" fill="#f0f3f7" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="600">02  天气氛围</text>
+  <text x="540" y="480" fill="#9da8b7" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">天空渐变 · 天气主视觉 · 温暖活泼</text>
+  <text x="890" y="458" fill="#f0f3f7" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="600">03  精密仪表</text>
+  <text x="890" y="480" fill="#9da8b7" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">细环刻度 · 深绿金色 · 高级设备感</text>
+  <text x="540" y="535" fill="#758294" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">天气示例仅用于排版预览；项目目前没有天气服务接入</text>
+</svg>

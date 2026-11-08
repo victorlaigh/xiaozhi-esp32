@@ -75,7 +75,9 @@ void McpServer::AddCommonTools() {
     auto display = board.GetDisplay();
     if (display && display->GetTheme() != nullptr) {
         AddTool("self.screen.set_theme",
-                "Set the theme of the screen. The theme can be `light` or `dark`.",
+                "Set the screen theme. Common themes are `light` and `dark`; some boards also "
+                "provide board-specific themes. On Movecall Moji, use `moji-minimal`, "
+                "`moji-weather`, or `moji-instrument` to change the standby clock layout.",
                 PropertyList({Property("theme", kPropertyTypeString)}),
                 [display](const PropertyList& properties) -> ReturnValue {
                     auto theme_name = properties["theme"].value<std::string>();
