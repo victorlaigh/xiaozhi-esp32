@@ -9,20 +9,30 @@
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <lvgl.h>
+#include <miniz.h>
+
+#include <mbedtls/base64.h>
+#include <mbedtls/md.h>
+#include <psa/crypto.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <string>
+#include <vector>
 
 #include "qrcodegen.h"
 
@@ -30,8 +40,11 @@ namespace {
 
 constexpr char TAG[] = "MojiMcp";
 constexpr size_t kMaxMijiaResponseSize = 8192;
+constexpr size_t kMaxMijiaDecodedResponseSize = 32768;
+constexpr int kMijiaHttpTxBufferSize = 2048;
 constexpr int kMaxQrVersion = 15;
 constexpr int kQrQuietZone = 4;
+bool mijia_crypto_ready = false;
 
 struct MijiaHttpResponse {
     std::string body;
@@ -90,8 +103,30 @@ bool IsXiaomiHttpsUrl(const std::string& url) {
     size_t host_start = sizeof(kHttpsPrefix) - 1;
     size_t host_end = url.find_first_of("/:?#", host_start);
     std::string host = Lowercase(url.substr(host_start, host_end - host_start));
-    return host == "xiaomi.com" ||
-           (host.size() > 11 && host.compare(host.size() - 11, 11, ".xiaomi.com") == 0);
+    if (host.empty() || host.find('@') != std::string::npos) {
+        return false;
+    }
+    static constexpr char kTrustedDomains[][12] = {"xiaomi.com", ".xiaomi.com", "mijia.com",
+                                                   ".mijia.com", "mi.com",      ".mi.com"};
+    for (const char* domain : kTrustedDomains) {
+        const size_t domain_size = std::strlen(domain);
+        if (host == domain || (domain[0] == '.' && host.size() > domain_size &&
+                               host.compare(host.size() - domain_size, domain_size, domain) == 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsAbsoluteHttpsUrl(const std::string& url) {
+    static constexpr char kHttpsPrefix[] = "https://";
+    if (url.compare(0, sizeof(kHttpsPrefix) - 1, kHttpsPrefix) != 0) {
+        return false;
+    }
+    const size_t host_start = sizeof(kHttpsPrefix) - 1;
+    const size_t host_end = url.find_first_of("/:?#", host_start);
+    const std::string host = url.substr(host_start, host_end - host_start);
+    return !host.empty() && host.find('@') == std::string::npos;
 }
 
 std::string MakeCookieHeader(const std::map<std::string, std::string>& cookies) {
@@ -107,10 +142,11 @@ std::string MakeCookieHeader(const std::map<std::string, std::string>& cookies) 
 
 bool GetMijiaUrl(const std::string& url, const std::string& user_agent,
                  std::map<std::string, std::string>& cookies, int timeout_ms, std::string& body,
-                 std::string& error) {
+                 std::string& error, bool allow_any_https_host = false, bool send_cookies = true) {
     std::string request_url = url;
     for (int redirect_count = 0; redirect_count <= 5; ++redirect_count) {
-        if (!IsXiaomiHttpsUrl(request_url)) {
+        const bool trusted_host = IsXiaomiHttpsUrl(request_url);
+        if (!trusted_host && (!allow_any_https_host || !IsAbsoluteHttpsUrl(request_url))) {
             error = "小米登录服务返回了不受信任的 HTTPS 地址";
             return false;
         }
@@ -125,7 +161,7 @@ bool GetMijiaUrl(const std::string& url, const std::string& user_agent,
             .disable_auto_redirect = true,
             .event_handler = OnMijiaHttpEvent,
             .buffer_size = 2048,
-            .buffer_size_tx = 1024,
+            .buffer_size_tx = kMijiaHttpTxBufferSize,
             .user_data = &response,
             .crt_bundle_attach = esp_crt_bundle_attach,
         };
@@ -141,7 +177,7 @@ bool GetMijiaUrl(const std::string& url, const std::string& user_agent,
                                                     "application/x-www-form-urlencoded");
         }
         std::string cookie_header = MakeCookieHeader(cookies);
-        if (header_err == ESP_OK && !cookie_header.empty()) {
+        if (header_err == ESP_OK && send_cookies && trusted_host && !cookie_header.empty()) {
             header_err = esp_http_client_set_header(client, "Cookie", cookie_header.c_str());
         }
         if (header_err != ESP_OK) {
@@ -206,6 +242,485 @@ std::string JsonString(const cJSON* object, const char* key) {
 int JsonCode(const cJSON* object) {
     const cJSON* value = cJSON_GetObjectItemCaseSensitive(object, "code");
     return cJSON_IsNumber(value) ? value->valueint : 0;
+}
+
+
+bool Base64Encode(const uint8_t* input, size_t input_size, std::string& output) {
+    if (input_size == 0) {
+        output.clear();
+        return true;
+    }
+    size_t output_size = 0;
+    if (mbedtls_base64_encode(nullptr, 0, &output_size, input, input_size) !=
+        MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+        return false;
+    }
+    output.resize(output_size);
+    if (mbedtls_base64_encode(reinterpret_cast<uint8_t*>(output.data()), output.size(),
+                              &output_size, input, input_size) != 0) {
+        return false;
+    }
+    output.resize(output_size);
+    return true;
+}
+
+bool Base64Decode(const std::string& input, std::vector<uint8_t>& output) {
+    output.resize(input.size());
+    size_t output_size = 0;
+    int result =
+        mbedtls_base64_decode(output.data(), output.size(), &output_size,
+                              reinterpret_cast<const uint8_t*>(input.data()), input.size());
+    if (result != 0) {
+        return false;
+    }
+    output.resize(output_size);
+    return true;
+}
+
+bool MakeApiNonce(std::string& nonce) {
+    std::array<uint8_t, 12> nonce_bytes;
+    esp_fill_random(nonce_bytes.data(), 8);
+
+    const std::time_t now = std::time(nullptr);
+    if (now <= 0) {
+        return false;
+    }
+    uint32_t minutes = static_cast<uint32_t>(now / 60);
+    nonce_bytes[8] = static_cast<uint8_t>(minutes >> 24);
+    nonce_bytes[9] = static_cast<uint8_t>(minutes >> 16);
+    nonce_bytes[10] = static_cast<uint8_t>(minutes >> 8);
+    nonce_bytes[11] = static_cast<uint8_t>(minutes);
+    return Base64Encode(nonce_bytes.data(), nonce_bytes.size(), nonce);
+}
+
+bool MakeSignedNonce(const std::string& ssecurity, const std::string& nonce,
+                     std::string& signed_nonce) {
+    std::vector<uint8_t> secret_bytes;
+    std::vector<uint8_t> nonce_bytes;
+    if (!Base64Decode(ssecurity, secret_bytes) || !Base64Decode(nonce, nonce_bytes)) {
+        return false;
+    }
+
+    std::vector<uint8_t> input = std::move(secret_bytes);
+    input.insert(input.end(), nonce_bytes.begin(), nonce_bytes.end());
+    std::array<uint8_t, 32> digest;
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (md_info == nullptr || mbedtls_md(md_info, input.data(), input.size(), digest.data()) != 0) {
+        return false;
+    }
+    return Base64Encode(digest.data(), digest.size(), signed_nonce);
+}
+
+bool Rc4Crypt(const std::vector<uint8_t>& key, const std::string& input,
+              std::vector<uint8_t>& output) {
+    if (key.empty()) {
+        return false;
+    }
+    std::array<uint8_t, 256> state;
+    for (size_t i = 0; i < state.size(); ++i) {
+        state[i] = static_cast<uint8_t>(i);
+    }
+
+    uint8_t j = 0;
+    for (size_t i = 0; i < state.size(); ++i) {
+        j = static_cast<uint8_t>(j + state[i] + key[i % key.size()]);
+        std::swap(state[i], state[j]);
+    }
+
+    uint8_t i = 0;
+    j = 0;
+    auto next_key_byte = [&]() {
+        i = static_cast<uint8_t>(i + 1);
+        j = static_cast<uint8_t>(j + state[i]);
+        std::swap(state[i], state[j]);
+        return state[static_cast<uint8_t>(state[i] + state[j])];
+    };
+    for (size_t offset = 0; offset < 1024; ++offset) {
+        next_key_byte();
+    }
+
+    output.resize(input.size());
+    for (size_t offset = 0; offset < input.size(); ++offset) {
+        output[offset] = static_cast<uint8_t>(input[offset]) ^ next_key_byte();
+    }
+    return true;
+}
+
+bool EncryptApiParameter(const std::vector<uint8_t>& key, const std::string& input,
+                         std::string& output) {
+    std::vector<uint8_t> encrypted;
+    return Rc4Crypt(key, input, encrypted) &&
+           Base64Encode(encrypted.data(), encrypted.size(), output);
+}
+
+bool MakeApiSignature(const std::string& uri, const std::string& signed_nonce,
+                      const std::string& data, const std::string& rc4_hash,
+                      std::string& signature) {
+    std::string sign_input = "POST&" + uri + "&data=" + data;
+    if (!rc4_hash.empty()) {
+        sign_input += "&rc4_hash__=" + rc4_hash;
+    }
+    sign_input += "&" + signed_nonce;
+    std::array<uint8_t, 20> digest;
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA1);
+    if (md_info == nullptr ||
+        mbedtls_md(md_info, reinterpret_cast<const uint8_t*>(sign_input.data()), sign_input.size(),
+                   digest.data()) != 0) {
+        return false;
+    }
+    return Base64Encode(digest.data(), digest.size(), signature);
+}
+
+std::string UrlEncode(const std::string& value) {
+    static constexpr char kHexDigits[] = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(value.size() * 3);
+    for (unsigned char ch : value) {
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+            ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            encoded.push_back(static_cast<char>(ch));
+        } else {
+            encoded.push_back('%');
+            encoded.push_back(kHexDigits[ch >> 4]);
+            encoded.push_back(kHexDigits[ch & 0x0F]);
+        }
+    }
+    return encoded;
+}
+
+bool DecompressGzip(const std::vector<uint8_t>& input, std::string& output) {
+    if (input.size() < 18 || input[0] != 0x1F || input[1] != 0x8B || input[2] != 8) {
+        return false;
+    }
+    const uint8_t flags = input[3];
+    if ((flags & 0xE0) != 0) {
+        return false;
+    }
+
+    size_t data_start = 10;
+    if ((flags & 0x04) != 0) {
+        if (input.size() < data_start + 2) {
+            return false;
+        }
+        const size_t extra_size =
+            input[data_start] | (static_cast<size_t>(input[data_start + 1]) << 8);
+        data_start += 2 + extra_size;
+    }
+    for (uint8_t flag : {static_cast<uint8_t>(0x08), static_cast<uint8_t>(0x10)}) {
+        if ((flags & flag) != 0) {
+            while (data_start < input.size() - 8 && input[data_start++] != 0) {
+            }
+        }
+    }
+    if ((flags & 0x02) != 0) {
+        data_start += 2;
+    }
+    if (data_start >= input.size() - 8) {
+        return false;
+    }
+
+    std::vector<uint8_t> decompressed(kMaxMijiaDecodedResponseSize);
+    const size_t decompressed_size = tinfl_decompress_mem_to_mem(
+        decompressed.data(), decompressed.size(), input.data() + data_start,
+        input.size() - data_start - 8, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    if (decompressed_size == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED || decompressed_size == 0) {
+        return false;
+    }
+    output.assign(reinterpret_cast<const char*>(decompressed.data()), decompressed_size);
+    return true;
+}
+
+bool DecodeApiResponse(const std::string& response, const std::string& signed_nonce,
+                       std::string& decoded, std::string& error) {
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> plain_json(cJSON_Parse(response.c_str()),
+                                                               cJSON_Delete);
+    if (plain_json) {
+        decoded = response;
+        return true;
+    }
+
+    std::vector<uint8_t> key;
+    std::vector<uint8_t> encrypted;
+    if (!Base64Decode(signed_nonce, key) || !Base64Decode(response, encrypted)) {
+        error = "无法解码米家家庭列表响应";
+        return false;
+    }
+    std::string encrypted_bytes(reinterpret_cast<const char*>(encrypted.data()), encrypted.size());
+    std::vector<uint8_t> decrypted;
+    if (!Rc4Crypt(key, encrypted_bytes, decrypted)) {
+        error = "无法解密米家家庭列表响应";
+        return false;
+    }
+    if (decrypted.size() >= 2 && decrypted[0] == 0x1F && decrypted[1] == 0x8B) {
+        if (!DecompressGzip(decrypted, decoded)) {
+            error = "无法解压米家家庭列表响应";
+            return false;
+        }
+    } else {
+        decoded.assign(reinterpret_cast<const char*>(decrypted.data()), decrypted.size());
+    }
+    return true;
+}
+
+bool RequestHomes(const std::string& user_agent, const std::string& service_token,
+                  const std::string& c_user_id, const std::string& device_id,
+                  const std::string& ssecurity, std::string& homes_json, std::string& error) {
+    static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
+    static constexpr char kApiUrl[] = "https://api.mijia.tech/app/v2/homeroom/gethome_merged";
+
+    if (!mijia_crypto_ready) {
+        error = "米家加密模块初始化失败，请重启设备后重试";
+        return false;
+    }
+
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> request_data(cJSON_CreateObject(),
+                                                                 cJSON_Delete);
+    if (request_data == nullptr || !cJSON_AddBoolToObject(request_data.get(), "fg", true) ||
+        !cJSON_AddBoolToObject(request_data.get(), "fetch_share", true) ||
+        !cJSON_AddBoolToObject(request_data.get(), "fetch_share_dev", true) ||
+        !cJSON_AddBoolToObject(request_data.get(), "fetch_cariot", true) ||
+        !cJSON_AddNumberToObject(request_data.get(), "limit", 300) ||
+        !cJSON_AddNumberToObject(request_data.get(), "app_ver", 7) ||
+        !cJSON_AddNumberToObject(request_data.get(), "plat_form", 0)) {
+        error = "无法创建米家家庭列表请求";
+        return false;
+    }
+
+    std::unique_ptr<char, decltype(&std::free)> data_json(
+        cJSON_PrintUnformatted(request_data.get()), std::free);
+    std::string nonce;
+    std::string signed_nonce;
+    std::vector<uint8_t> encryption_key;
+    if (!data_json || !MakeApiNonce(nonce) || !MakeSignedNonce(ssecurity, nonce, signed_nonce) ||
+        !Base64Decode(signed_nonce, encryption_key)) {
+        error = "无法生成米家 API 请求签名";
+        return false;
+    }
+
+    std::string rc4_hash;
+    std::string encrypted_data;
+    std::string encrypted_rc4_hash;
+    std::string signature;
+    if (!MakeApiSignature(kUri, signed_nonce, data_json.get(), "", rc4_hash) ||
+        !EncryptApiParameter(encryption_key, rc4_hash, encrypted_rc4_hash) ||
+        !EncryptApiParameter(encryption_key, data_json.get(), encrypted_data) ||
+        !MakeApiSignature(kUri, signed_nonce, encrypted_data, encrypted_rc4_hash, signature)) {
+        error = "无法加密米家 API 请求";
+        return false;
+    }
+
+    const std::string form_data =
+        "data=" + UrlEncode(encrypted_data) + "&rc4_hash__=" + UrlEncode(encrypted_rc4_hash) +
+        "&signature=" + UrlEncode(signature) + "&ssecurity=" + UrlEncode(ssecurity) +
+        "&_nonce=" + UrlEncode(nonce);
+    if (form_data.size() > INT_MAX) {
+        error = "米家 API 请求超出大小限制";
+        return false;
+    }
+
+    std::map<std::string, std::string> cookies = {
+        {"cUserId", c_user_id},
+        {"yetAnotherServiceToken", service_token},
+        {"serviceToken", service_token},
+        {"timezone", "GMT+08:00"},
+        {"is_daylight", "0"},
+        {"dst_offset", "0"},
+        {"channel", "MI_APP_STORE"},
+        {"countryCode", "CN"},
+        {"PassportDeviceId", device_id},
+        {"locale", "zh_CN"},
+    };
+    MijiaHttpResponse response;
+    response.cookies = &cookies;
+    esp_http_client_config_t config = {
+        .url = kApiUrl,
+        .user_agent = user_agent.c_str(),
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 20000,
+        .disable_auto_redirect = true,
+        .event_handler = OnMijiaHttpEvent,
+        .buffer_size = 2048,
+        .buffer_size_tx = kMijiaHttpTxBufferSize,
+        .user_data = &response,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        error = "无法初始化米家家庭列表 HTTPS 连接";
+        return false;
+    }
+
+    esp_err_t header_err = esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    if (header_err == ESP_OK) {
+        header_err =
+            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    }
+    if (header_err == ESP_OK) {
+        header_err = esp_http_client_set_header(client, "miot-accept-encoding", "GZIP");
+    }
+    if (header_err == ESP_OK) {
+        header_err = esp_http_client_set_header(client, "miot-encrypt-algorithm", "ENCRYPT-RC4");
+    }
+    if (header_err == ESP_OK) {
+        header_err =
+            esp_http_client_set_header(client, "x-xiaomi-protocal-flag-cli", "PROTOCAL-HTTP2");
+    }
+    const std::string cookie_header = MakeCookieHeader(cookies);
+    if (header_err == ESP_OK) {
+        header_err = esp_http_client_set_header(client, "Cookie", cookie_header.c_str());
+    }
+    if (header_err == ESP_OK) {
+        header_err = esp_http_client_set_post_field(client, form_data.c_str(),
+                                                    static_cast<int>(form_data.size()));
+    }
+    if (header_err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        error = "无法设置米家家庭列表请求参数";
+        return false;
+    }
+
+    const esp_err_t request_err = esp_http_client_perform(client);
+    const int status_code = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    if (request_err != ESP_OK) {
+        error = response.too_large ? "米家家庭列表响应超出大小限制" : "连接米家家庭列表服务失败";
+        return false;
+    }
+    if (status_code != HttpStatus_Ok) {
+        error = "米家家庭列表服务返回 HTTP " + std::to_string(status_code);
+        return false;
+    }
+
+    return DecodeApiResponse(response.body, signed_nonce, homes_json, error);
+}
+
+ToolResult ListHomes() {
+    Settings auth("mijia_auth");
+    const std::string service_token = auth.GetString("service_tok");
+    const std::string c_user_id = auth.GetString("cuser_id");
+    const std::string device_id = auth.GetString("device_id");
+    const std::string user_agent = auth.GetString("user_agent");
+    const std::string ssecurity = auth.GetString("ssecurity");
+    if (service_token.empty() || c_user_id.empty() || device_id.empty() || user_agent.empty() ||
+        ssecurity.empty()) {
+        return std::unexpected("尚未登录米家，请先调用 self.mijia.login 完成扫码登录");
+    }
+
+    std::string response;
+    std::string error;
+    if (!RequestHomes(user_agent, service_token, c_user_id, device_id, ssecurity, response,
+                      error)) {
+        return std::unexpected(error);
+    }
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> result(ParseMijiaJson(response), cJSON_Delete);
+    if (!result) {
+        return std::unexpected("无法解析米家家庭列表响应");
+    }
+
+    const cJSON* result_data = cJSON_GetObjectItemCaseSensitive(result.get(), "result");
+    const cJSON* code = cJSON_GetObjectItemCaseSensitive(result.get(), "code");
+    if (!cJSON_IsNumber(code) || JsonCode(result.get()) != 0 || !cJSON_IsObject(result_data)) {
+        std::string message = JsonString(result.get(), "message");
+        if (message.empty()) {
+            message = JsonString(result.get(), "desc");
+        }
+        if (cJSON_IsNumber(code) && message == "米家家庭列表请求失败") {
+            message += "，错误码 " + std::to_string(code->valueint);
+        }
+        if (message.empty()) {
+            message = "米家家庭列表请求失败，错误码 " +
+                      (cJSON_IsNumber(code) ? std::to_string(code->valueint) : "未知");
+        }
+        const std::string code_text =
+            cJSON_IsNumber(code) ? std::to_string(code->valueint) : "unknown";
+        ESP_LOGW(TAG, "Mijia homes API rejected request: code=%s, message=%s", code_text.c_str(),
+                 message.c_str());
+        return std::unexpected(std::move(message));
+    }
+    const cJSON* homes = cJSON_GetObjectItemCaseSensitive(result_data, "homelist");
+    if (!cJSON_IsArray(homes)) {
+        return std::unexpected("米家家庭列表响应缺少 homelist");
+    }
+
+    // === 【优化核心】在这里对庞大的 JSON 进行裁剪，只提取核心轻量数据 ===
+    cJSON* slim_homes_array = cJSON_CreateArray();
+    cJSON* home_item = NULL;
+    
+    cJSON_ArrayForEach(home_item, homes) {
+        cJSON* h_id = cJSON_GetObjectItemCaseSensitive(home_item, "id");
+        cJSON* h_name = cJSON_GetObjectItemCaseSensitive(home_item, "name");
+        
+        // 创建一个精简版的家庭对象
+        cJSON* slim_home = cJSON_CreateObject();
+        if (h_id) cJSON_AddStringToObject(slim_home, "id", h_id->valuestring ? h_id->valuestring : std::to_string(h_id->valuedouble).c_str());
+        // 如果id是数字或者是字符串，适配安全取法：
+        // 建议使用 cJSON_IsString(h_id) ? h_id->valuestring : std::to_string((long long)h_id->valuedouble).c_str()
+        if (h_name) cJSON_AddStringToObject(slim_home, "name", h_name->valuestring ? h_name->valuestring : "");
+        
+        // 如果你还需要房间列表，可以只保留房间的名字和id，丢弃几十个设备的 dids 数组：
+        const cJSON* rooms = cJSON_GetObjectItemCaseSensitive(home_item, "roomlist");
+        if (cJSON_IsArray(rooms)) {
+            cJSON* slim_rooms_array = cJSON_CreateArray();
+            cJSON* room_item = NULL;
+            cJSON_ArrayForEach(room_item, rooms) {
+                cJSON* r_id = cJSON_GetObjectItemCaseSensitive(room_item, "id");
+                cJSON* r_name = cJSON_GetObjectItemCaseSensitive(room_item, "name");
+                
+                cJSON* slim_room = cJSON_CreateObject();
+                // 简化填充...
+                cJSON_AddItemToArray(slim_rooms_array, slim_room);
+            }
+            cJSON_AddItemToObject(slim_home, "rooms", slim_rooms_array);
+        }
+        
+        cJSON_AddItemToArray(slim_homes_array, slim_home);
+    }
+
+
+   
+    // std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(homes),
+    //                                                         std::free);
+     // 原本得json改成序列化精简后的 JSON
+    std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(slim_homes_array),
+                                                             std::free);
+    cJSON_Delete(slim_homes_array); // 清理临时创建的 cJSON 对象                                                         
+
+    if (!homes_string) {
+        return std::unexpected("无法序列化精简后的米家家庭列表");
+    }
+    return std::string(homes_string.get());
+}
+
+ToolResult ListHomesOnDedicatedStack() {
+    struct TaskContext {
+        SemaphoreHandle_t completed;
+        ToolResult result;
+    };
+
+    SemaphoreHandle_t completed = xSemaphoreCreateBinary();
+    if (completed == nullptr) {
+        return std::unexpected("无法创建米家家庭列表任务同步对象");
+    }
+
+    TaskContext context{completed, std::unexpected("米家家庭列表任务未完成")};
+    const BaseType_t task_status = xTaskCreate(
+        [](void* arg) {
+            auto* context = static_cast<TaskContext*>(arg);
+            context->result = ListHomes();
+            ESP_LOGI(TAG, "Mijia homes task stack remaining: %u bytes",
+                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            xSemaphoreGive(context->completed);
+            vTaskDelete(nullptr);
+        },
+        "mijia_homes", 24576, &context, 4, nullptr);
+    if (task_status != pdPASS) {
+        vSemaphoreDelete(completed);
+        return std::unexpected("无法创建米家家庭列表任务");
+    }
+
+    xSemaphoreTake(completed, portMAX_DELAY);
+    vSemaphoreDelete(completed);
+    return std::move(context.result);
 }
 
 std::string RandomString(size_t length, const char* alphabet) {
@@ -432,12 +947,9 @@ private:
             return false;
         }
 
-        lv_label_set_text(title, "扫码登录");
-        lv_obj_set_style_text_color(title, lv_color_black(), 0);
-        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
         lv_label_set_text(caption, "请使用米家 App 扫码");
         lv_obj_set_style_text_color(caption, lv_color_black(), 0);
-        lv_obj_align(caption, LV_ALIGN_BOTTOM_MID, 0, -8);
+        lv_obj_align(caption, LV_ALIGN_BOTTOM_MID, 0, -10);
 
         lv_canvas_set_buffer(qr_canvas_, pixels, image_size, image_size, LV_COLOR_FORMAT_RGB565);
         lv_obj_set_size(qr_canvas_, image_size, image_size);
@@ -445,7 +957,7 @@ private:
         int max_scale = std::min(display_->width() - 20, display_->height() - 56) / image_size;
         uint32_t scale = static_cast<uint32_t>(std::max(1, std::min(3, max_scale)) * 256);
         lv_image_set_scale(qr_canvas_, scale);
-        lv_obj_align(qr_canvas_, LV_ALIGN_CENTER, 0, 8);
+        lv_obj_align(qr_canvas_, LV_ALIGN_CENTER, 0, 6);
         lv_obj_move_foreground(overlay_);
         qr_pixels_ = pixels;
         return true;
@@ -474,16 +986,22 @@ private:
         const std::string psecurity = JsonString(login_data.get(), "psecurity");
         const std::string nonce = JsonString(login_data.get(), "nonce");
         const std::string callback_url = JsonString(login_data.get(), "location");
-        if (user_id.empty() || c_user_id.empty() || pass_token.empty() || ssecurity.empty() ||
-            psecurity.empty() || nonce.empty() || !IsXiaomiHttpsUrl(callback_url)) {
-            error = "小米账号返回的登录凭据不完整";
+        if (user_id.empty() || c_user_id.empty() || pass_token.empty() || ssecurity.empty()) {
+            error = "小米账号扫码成功，但未返回必要登录凭据";
+            return false;
+        }
+        if (!IsAbsoluteHttpsUrl(callback_url)) {
+            error = callback_url.empty()
+                        ? "小米账号扫码成功，但长轮询响应缺少 location 回调地址"
+                        : "小米账号扫码成功，但返回的 location 不是有效的 HTTPS 地址";
             return false;
         }
 
         context.cookies["userId"] = user_id;
         context.cookies["cUserId"] = c_user_id;
         context.cookies["passToken"] = pass_token;
-        if (!GetMijiaUrl(callback_url, context.user_agent, context.cookies, 15000, body, error)) {
+        if (!GetMijiaUrl(callback_url, context.user_agent, context.cookies, 15000, body, error,
+                         true, IsXiaomiHttpsUrl(callback_url))) {
             return false;
         }
         if (!IsCurrent(generation)) {
@@ -517,8 +1035,16 @@ private:
             settings.SetString("pass_token", pass_token);
             settings.SetString("service_tok", service_token);
             settings.SetString("ssecurity", ssecurity);
-            settings.SetString("psecurity", psecurity);
-            settings.SetString("nonce", nonce);
+            if (psecurity.empty()) {
+                settings.EraseKey("psecurity");
+            } else {
+                settings.SetString("psecurity", psecurity);
+            }
+            if (nonce.empty()) {
+                settings.EraseKey("nonce");
+            } else {
+                settings.SetString("nonce", nonce);
+            }
             settings.SetString("device_id", context.device_id);
             settings.SetString("pass_o", context.pass_o);
             settings.SetString("user_agent", context.user_agent);
@@ -603,6 +1129,12 @@ void HideMojiMijiaLoginQr() {
 }
 
 void InitializeMojiMijiaTool(Display* display) {
+    const psa_status_t psa_status = psa_crypto_init();
+    mijia_crypto_ready = psa_status == PSA_SUCCESS;
+    if (!mijia_crypto_ready) {
+        ESP_LOGE(TAG, "PSA crypto initialization failed: %ld", static_cast<long>(psa_status));
+    }
+
     static MijiaQrLogin mijia_login(display);
     mijia_login_instance = &mijia_login;
     McpServer::GetInstance().AddTool(
@@ -610,4 +1142,9 @@ void InitializeMojiMijiaTool(Display* display) {
         "在屏幕上显示小米账号二维码，用户使用米家 App 扫码后完成登录。登录凭据会保存在设备 NVS 中。"
         "这是用户主动操作，不要由 AI 自行调用。",
         PropertyList(), [](const PropertyList&) -> ToolResult { return mijia_login.Start(); });
+    McpServer::GetInstance().AddTool(
+        "self.mijia.list_homes",
+        "列出当前已登录米家账号的家庭信息，包括家庭 ID、名称和房间。需要先完成米家扫码登录。",
+        PropertyList(),
+        [](const PropertyList&) -> ToolResult { return ListHomesOnDedicatedStack(); });
 }

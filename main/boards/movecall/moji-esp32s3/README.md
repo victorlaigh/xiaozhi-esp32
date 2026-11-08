@@ -47,4 +47,6 @@ IP 定位使用 [ipwho.is](https://ipwho.is/)，该服务会看到设备的公�
 
 在伴侣端请求包含 `withUserTools: true` 的 MCP 工具列表后，手动调用 user-only 工具 `self.mijia.login`。设备会显示小米账号二维码；使用米家 App 扫码并确认后，设备自动完成登录，并将后续米家 API 使用所需的 token 保存到 NVS。登录过程不会要求或保存小米账号密码。
 
+完成登录后，可调用普通 MCP 工具 `self.mijia.list_homes` 查询账号下的家庭列表。
+
 注意：当前固件配置未启用 NVS 加密，登录 token 会以明文保存在设备闪存中。请只在可信设备上使用；若设备可能被他人读取，应先配置并启用 NVS 加密。
