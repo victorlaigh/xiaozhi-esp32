@@ -462,139 +462,6 @@ bool DecodeApiResponse(const std::string& response, const std::string& signed_no
     return true;
 }
 
-bool RequestHomes(const std::string& user_agent, const std::string& service_token,
-                  const std::string& c_user_id, const std::string& device_id,
-                  const std::string& ssecurity, std::string& homes_json, std::string& error,
-                  const std::string& target_home_id = "") {
-    static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
-    static constexpr char kApiUrl[] = "https://api.mijia.tech/app/v2/homeroom/gethome_merged";
-
-    if (!mijia_crypto_ready) {
-        error = "米家加密模块初始化失败，请重启设备后重试";
-        return false;
-    }
-
-    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> request_data(cJSON_CreateObject(),
-                                                                 cJSON_Delete);
-    if (request_data == nullptr || !cJSON_AddBoolToObject(request_data.get(), "fg", true) ||
-        !cJSON_AddBoolToObject(request_data.get(), "fetch_share", true) ||
-        !cJSON_AddBoolToObject(request_data.get(), "fetch_share_dev", true) ||
-        !cJSON_AddBoolToObject(request_data.get(), "fetch_cariot", true) ||
-        !cJSON_AddNumberToObject(request_data.get(), "limit", 300) ||
-        !cJSON_AddNumberToObject(request_data.get(), "app_ver", 7) ||
-        !cJSON_AddNumberToObject(request_data.get(), "plat_form", 0)) {
-        error = "无法创建米家家庭列表请求";
-        return false;
-    }
-
-    std::unique_ptr<char, decltype(&std::free)> data_json(
-        cJSON_PrintUnformatted(request_data.get()), std::free);
-    std::string nonce;
-    std::string signed_nonce;
-    std::vector<uint8_t> encryption_key;
-    if (!data_json || !MakeApiNonce(nonce) || !MakeSignedNonce(ssecurity, nonce, signed_nonce) ||
-        !Base64Decode(signed_nonce, encryption_key)) {
-        error = "无法生成米家 API 请求签名";
-        return false;
-    }
-
-    std::string rc4_hash;
-    std::string encrypted_data;
-    std::string encrypted_rc4_hash;
-    std::string signature;
-    if (!MakeApiSignature(kUri, signed_nonce, data_json.get(), "", rc4_hash) ||
-        !EncryptApiParameter(encryption_key, rc4_hash, encrypted_rc4_hash) ||
-        !EncryptApiParameter(encryption_key, data_json.get(), encrypted_data) ||
-        !MakeApiSignature(kUri, signed_nonce, encrypted_data, encrypted_rc4_hash, signature)) {
-        error = "无法加密米家 API 请求";
-        return false;
-    }
-
-    const std::string form_data =
-        "data=" + UrlEncode(encrypted_data) + "&rc4_hash__=" + UrlEncode(encrypted_rc4_hash) +
-        "&signature=" + UrlEncode(signature) + "&ssecurity=" + UrlEncode(ssecurity) +
-        "&_nonce=" + UrlEncode(nonce);
-    if (form_data.size() > INT_MAX) {
-        error = "米家 API 请求超出大小限制";
-        return false;
-    }
-
-    std::map<std::string, std::string> cookies = {
-        {"cUserId", c_user_id},
-        {"yetAnotherServiceToken", service_token},
-        {"serviceToken", service_token},
-        {"timezone", "GMT+08:00"},
-        {"is_daylight", "0"},
-        {"dst_offset", "0"},
-        {"channel", "MI_APP_STORE"},
-        {"countryCode", "CN"},
-        {"PassportDeviceId", device_id},
-        {"locale", "zh_CN"},
-    };
-    MijiaHttpResponse response;
-    response.cookies = &cookies;
-    esp_http_client_config_t config = {
-        .url = kApiUrl,
-        .user_agent = user_agent.c_str(),
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 20000,
-        .disable_auto_redirect = true,
-        .event_handler = OnMijiaHttpEvent,
-        .buffer_size = 2048,
-        .buffer_size_tx = kMijiaHttpTxBufferSize,
-        .user_data = &response,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
-        error = "无法初始化米家家庭列表 HTTPS 连接";
-        return false;
-    }
-
-    esp_err_t header_err = esp_http_client_set_header(client, "Accept-Encoding", "identity");
-    if (header_err == ESP_OK) {
-        header_err =
-            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
-    }
-    if (header_err == ESP_OK) {
-        header_err = esp_http_client_set_header(client, "miot-accept-encoding", "GZIP");
-    }
-    if (header_err == ESP_OK) {
-        header_err = esp_http_client_set_header(client, "miot-encrypt-algorithm", "ENCRYPT-RC4");
-    }
-    if (header_err == ESP_OK) {
-        header_err =
-            esp_http_client_set_header(client, "x-xiaomi-protocal-flag-cli", "PROTOCAL-HTTP2");
-    }
-    const std::string cookie_header = MakeCookieHeader(cookies);
-    if (header_err == ESP_OK) {
-        header_err = esp_http_client_set_header(client, "Cookie", cookie_header.c_str());
-    }
-    if (header_err == ESP_OK) {
-        header_err = esp_http_client_set_post_field(client, form_data.c_str(),
-                                                    static_cast<int>(form_data.size()));
-    }
-    if (header_err != ESP_OK) {
-        esp_http_client_cleanup(client);
-        error = "无法设置米家家庭列表请求参数";
-        return false;
-    }
-
-    const esp_err_t request_err = esp_http_client_perform(client);
-    const int status_code = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-    if (request_err != ESP_OK) {
-        error = response.too_large ? "米家家庭列表响应超出大小限制" : "连接米家家庭列表服务失败";
-        return false;
-    }
-    if (status_code != HttpStatus_Ok) {
-        error = "米家家庭列表服务返回 HTTP " + std::to_string(status_code);
-        return false;
-    }
-
-    return DecodeApiResponse(response.body, signed_nonce, homes_json, error);
-}
-
 // 定义一个米家凭证结构体
 struct MijiaAuthCredentials {
     std::string service_token;
@@ -603,7 +470,6 @@ struct MijiaAuthCredentials {
     std::string user_agent;
     std::string ssecurity;
 };
-
 // 公共的凭证加载与校验函数
 // 如果未登录，直接返回带有错误信息的 std::unexpected；成功则返回凭证对象
 std::expected<MijiaAuthCredentials, ToolResult> LoadMijiaAuth() {
@@ -624,23 +490,161 @@ std::expected<MijiaAuthCredentials, ToolResult> LoadMijiaAuth() {
 
     return creds;
 }
-
 // 凭证区域结束
 
-ToolResult ListHomes() {
-// 1. 一行代码完成鉴权检查与加载
-    auto auth_result = LoadMijiaAuth();
-    if (!auth_result) {
-        return auth_result.error(); // 直接返回登录提示
+// 封装成Request 登录信息那些包含
+bool RequestApi(const std::string& uri, const std::string& api_url, 
+                cJSON* request_data_obj, std::string& response_json, std::string& error) {
+
+    if (!mijia_crypto_ready) {  // 等加密模块初始化
+        error = "米家加密模块初始化失败，请重启设备后重试";
+        cJSON_Delete(request_data_obj);
+        return false;
     }
-    const auto& creds = *auth_result; // 获取凭证：creds.service_token, creds.user_agent 等
+
+    auto auth_result = LoadMijiaAuth();    // 按需加载当前最新的登录凭证
+    if (!auth_result.has_value()) {
+        error = "尚未登录米家，请先完成扫码登录";
+        cJSON_Delete(request_data_obj);
+        return false;
+    }
+    const auto& creds = auth_result.value();
+
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> request_data(request_data_obj, cJSON_Delete);
+    if (request_data == nullptr) {
+        error = "无效的请求数据";
+        return false;
+    }
+
+    std::unique_ptr<char, decltype(&std::free)> data_json(
+        cJSON_PrintUnformatted(request_data.get()), std::free);
+    std::string nonce;
+    std::string signed_nonce;
+    std::vector<uint8_t> encryption_key;
+    // 使用加载出来的 creds.ssecurity
+    if (!data_json || !MakeApiNonce(nonce) || !MakeSignedNonce(creds.ssecurity, nonce, signed_nonce) ||
+        !Base64Decode(signed_nonce, encryption_key)) {
+        error = "无法生成米家 API 请求签名";
+        return false;
+    }
+
+    std::string rc4_hash;
+    std::string encrypted_data;
+    std::string encrypted_rc4_hash;
+    std::string signature;
+    if (!MakeApiSignature(uri.c_str(), signed_nonce, data_json.get(), "", rc4_hash) ||
+        !EncryptApiParameter(encryption_key, rc4_hash, encrypted_rc4_hash) ||
+        !EncryptApiParameter(encryption_key, data_json.get(), encrypted_data) ||
+        !MakeApiSignature(uri.c_str(), signed_nonce, encrypted_data, encrypted_rc4_hash, signature)) {
+        error = "无法加密米家 API 请求";
+        return false;
+    }
+
+    const std::string form_data =
+        "data=" + UrlEncode(encrypted_data) + "&rc4_hash__=" + UrlEncode(encrypted_rc4_hash) +
+        "&signature=" + UrlEncode(signature) + "&ssecurity=" + UrlEncode(creds.ssecurity) +
+        "&_nonce=" + UrlEncode(nonce);
+
+    // 组装 Cookies
+    std::map<std::string, std::string> cookies = {
+        {"cUserId", creds.c_user_id},
+        {"yetAnotherServiceToken", creds.service_token},
+        {"serviceToken", creds.service_token},
+        {"timezone", "GMT+08:00"},
+        {"is_daylight", "0"},
+        {"dst_offset", "0"},
+        {"channel", "MI_APP_STORE"},
+        {"countryCode", "CN"},
+        {"PassportDeviceId", creds.device_id},
+        {"locale", "zh_CN"},
+    };
+
+    MijiaHttpResponse response;
+    response.cookies = &cookies;
+    esp_http_client_config_t config = {
+        .url = api_url.c_str(),
+        .user_agent = creds.user_agent.c_str(),
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 20000,
+        .disable_auto_redirect = true,
+        .event_handler = OnMijiaHttpEvent,
+        .buffer_size = 2048,
+        .buffer_size_tx = kMijiaHttpTxBufferSize,
+        .user_data = &response,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        error = "无法初始化 HTTPS 连接";
+        return false;
+    }
+
+    // 设置 Headers
+    esp_err_t header_err = esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    if (header_err == ESP_OK) header_err = esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    if (header_err == ESP_OK) header_err = esp_http_client_set_header(client, "miot-accept-encoding", "GZIP");
+    if (header_err == ESP_OK) header_err = esp_http_client_set_header(client, "miot-encrypt-algorithm", "ENCRYPT-RC4");
+    if (header_err == ESP_OK) header_err = esp_http_client_set_header(client, "x-xiaomi-protocal-flag-cli", "PROTOCAL-HTTP2");
+    
+    const std::string cookie_header = MakeCookieHeader(cookies);
+    if (header_err == ESP_OK) header_err = esp_http_client_set_header(client, "Cookie", cookie_header.c_str());
+    if (header_err == ESP_OK) header_err = esp_http_client_set_post_field(client, form_data.c_str(), static_cast<int>(form_data.size()));
+
+    if (header_err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        error = "无法设置请求参数";
+        return false;
+    }
+
+    const esp_err_t request_err = esp_http_client_perform(client);
+    const int status_code = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (request_err != ESP_OK) {
+        error = response.too_large ? "响应超出大小限制" : "连接服务失败";
+        return false;
+    }
+    if (status_code != HttpStatus_Ok) {
+        error = "服务返回 HTTP " + std::to_string(status_code);
+        return false;
+    }
+
+    return DecodeApiResponse(response.body, signed_nonce, response_json, error);
+}
+
+bool RequestHomes(std::string& homes_json, std::string& error, const std::string& target_home_id = "") {
+    static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
+    static constexpr char kApiUrl[] = "https://api.mijia.tech/app/v2/homeroom/gethome_merged";
+
+    cJSON* request_data = cJSON_CreateObject(); // 在requestApi声明过删除参数
+    if (request_data == nullptr || !cJSON_AddBoolToObject(request_data, "fg", true) ||
+        !cJSON_AddBoolToObject(request_data, "fetch_share", true) ||
+        !cJSON_AddBoolToObject(request_data, "fetch_share_dev", true) ||
+        !cJSON_AddBoolToObject(request_data, "fetch_cariot", true) ||
+        !cJSON_AddNumberToObject(request_data, "limit", 300) ||
+        !cJSON_AddNumberToObject(request_data, "app_ver", 7) ||
+        !cJSON_AddNumberToObject(request_data, "plat_form", 0)) {
+        if (request_data) cJSON_Delete(request_data);
+        error = "无法创建米家家庭列表请求";
+        return false;
+    }
+
+    if (!target_home_id.empty()) {
+        cJSON_AddStringToObject(request_data, "home_id", target_home_id.c_str());
+    }
+
+    return RequestApi(kUri, kApiUrl, request_data, homes_json, error);
+}
+
+
+ToolResult ListHomes() {
 
     std::string response;
     std::string error;
-    // 使用 creds 里的字段发起请求
-    if (!RequestHomes(creds.user_agent, creds.service_token, creds.c_user_id, 
-                      creds.device_id, creds.ssecurity, response, error)) {
-        return std::unexpected(error);
+    if (!RequestHomes(response, error)) {
+        return std::unexpected(error);  
+        // return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
     }
 
     std::unique_ptr<cJSON, decltype(&cJSON_Delete)> result(ParseMijiaJson(response), cJSON_Delete);
@@ -754,19 +758,14 @@ ToolResult ListHomesOnDedicatedStack() {
 
 ToolResult GetDevicesListInternal(const std::string& target_home_id) {
 
-    // 1. 同样一行代码完成鉴权检查
-    auto auth_result = LoadMijiaAuth();
-    if (!auth_result) {
-        return auth_result.error();
-    }
-    const auto& creds = *auth_result;
-
     std::string response;
     std::string error;
     // 调用RequestHomes获取设备列表 
-    if (!RequestHomes(creds.user_agent, creds.service_token, creds.c_user_id, 
-                        creds.device_id, creds.ssecurity, response, error, target_home_id)) {
+    // 错误处理，例如返回错误信息给上层
+    // error 中包含了具体失败原因
+    if (!RequestHomes(response, error)) {
         return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
+        // ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
     }
 
     std::unique_ptr<cJSON, decltype(&cJSON_Delete)> result(ParseMijiaJson(response), cJSON_Delete);
