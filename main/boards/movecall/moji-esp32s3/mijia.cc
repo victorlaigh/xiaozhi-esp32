@@ -646,26 +646,16 @@ bool RequestResults(std::string& response, cJSON** results){
         }
         const std::string code_text =
             cJSON_IsNumber(code) ? std::to_string(code->valueint) : "unknown";
-        ESP_LOGW(TAG, "Mijia homes API rejected request: code=%s, message=%s", code_text.c_str(),
+        ESP_LOGW("RequestResults", "解析Results失败: code=%s, message=%s", code_text.c_str(),
                  message.c_str());
         //return std::unexpected(std::move(message));
         return NULL;
     }
-    /*
-    char* json_str = cJSON_PrintUnformatted(result_data);
-    if (json_str != NULL) {
-        // 3. 打印字符串 (%s 对应 char*)
-        ESP_LOGI(TAG, "Result JSON: %s", json_str);
-        // 4. 重要：释放 cJSON_Print 分配的内存
-        free(json_str);
-    } else {
-        ESP_LOGE(TAG, "Failed to print result_data to string");
-    }*/
+
     *results = cJSON_Duplicate(result_data, true);
 
     return (*results != nullptr);
 }
-
 
 bool RequestHomes(std::string& homes_json, std::string& error) {
     static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
@@ -972,119 +962,162 @@ static void request_devices(const char *id, const char *uid, std::string& device
         return;
     }
     RequestApi(kUri, request_data, devices_json, error);    // 获取资料
+    //ESP_LOGI("request_devices", "执行完，如果错误： %s", error.c_str());
 }
 
 ToolResult GetDevicesListInternal(const std::string& target_home_id) {
     std::string response;
     std::string error;
-
-    if (target_home_id.empty()) {   // 如果id空白
         
-        if (!RequestHomes(response, error)) {   // Request空白报错
-            return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
-            ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
-        }
-        
-        cJSON* result_data = nullptr;
-        RequestResults(response, &result_data); // 包含parse 返回result内容,要调用删除函数
-        if(!result_data){   // 取出得Result空白报错
-            return std::unexpected("Result内容读取失败");  
-        } 
+    if (!RequestHomes(response, error)) {   // Request空白报错
+        return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
+        ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
+    }
     
-        // 深拷贝，使其独立于 result_data 现在可以安全地释放原始大对象
-        cJSON *result_homelist = cJSON_Duplicate(result_data, true);
-        cJSON_Delete(result_data);  // 【重要】因为是 Duplicate 出来的独立对象，必须手动释放
-        // 继续使用 result_homelist...
-        const cJSON* home_list = cJSON_GetObjectItemCaseSensitive(result_homelist, "homelist");
-        if (!cJSON_IsArray(home_list)) {    //如果取出来不是列表报错
-            return std::unexpected("获取设备时家庭列表响应缺少 homelist");
-        }
-        
-        cJSON* homes_id_array = cJSON_CreateArray();    // id uid列表, 用完之后delete
-        s_make_id_array("id","uid", home_list, homes_id_array); // 可能之后要增加名字 方便用名字直接控制
+    cJSON* result_data = nullptr;
+    RequestResults(response, &result_data); // 包含parse 返回result内容,要调用删除函数
+    if(!result_data){   // 取出得Result空白报错
+        return std::unexpected("Result内容读取失败");  
+    } 
 
-        cJSON* device_array = cJSON_CreateObject(); // 创建一个设备主列表, 用完要delete
-        cJSON *devitem = NULL; 
-        cJSON_ArrayForEach(devitem, homes_id_array) {   // 获取每个id设备列表 加到主列表
-            cJSON *id_obj = cJSON_GetObjectItemCaseSensitive(devitem, "id");
-            cJSON *uid_obj = cJSON_GetObjectItemCaseSensitive(devitem, "uid");
-            
-            if ( !(id_obj || cJSON_IsString(id_obj)  ||  id_obj->valuestring != NULL ||
-                uid_obj || cJSON_IsString(uid_obj) || uid_obj->valuestring != NULL)) {
-                return std::unexpected("获取id,uid失败");
+    // 深拷贝，使其独立于 result_data 现在可以安全地释放原始对象
+    cJSON *result_homelist = cJSON_Duplicate(result_data, true);
+    cJSON_Delete(result_data);  // 【重要】因为是 Duplicate 出来的独立对象，必须手动释放
+    // 继续使用 result_homelist...
+    const cJSON* home_list = cJSON_GetObjectItemCaseSensitive(result_homelist, "homelist");
+    if (!cJSON_IsArray(home_list)) {    //如果取出来不是列表报错
+        return std::unexpected("获取设备时家庭列表响应缺少 homelist");
+    }
+    
+    cJSON* homes_id_array = cJSON_CreateArray();    // id uid列表, 用完之后要delete
+    if (!target_home_id.empty()) {   // 如果id不空白,也是放homes_id_array 但是就一组 可能也能用名字？
+        int array_size = cJSON_GetArraySize(home_list);
+        int uid_int = 0;
+        for (int i = 0; i < array_size; i++) {  // 遍历数组
+            // 获取数组中的第 i 个元素（这是一个对象）
+            cJSON *item = cJSON_GetArrayItem(home_list, i);
+            if (item == NULL || !cJSON_IsObject(item)) {
+                continue; // 跳过非对象元素
             }
+
+            // 获取当前对象的 "id" 字段
+            cJSON *id_obj = cJSON_GetObjectItemCaseSensitive(item, "id");
+            // 跳过检查 id 字段是否存在且是数字类型 if (id_obj != NULL && cJSON_IsNumber(id_obj)) {
+            // 比较 id 值
+            //if (id_obj->valueint == target_id) {
+            if (id_obj->valuestring == target_home_id) {
+
+                // 匹配项，提取 "uid"
+                cJSON *uid_obj = cJSON_GetObjectItemCaseSensitive(item, "uid");
+                uid_int = uid_obj->valueint;
+                /* 数字判断之类 先不用
+                if (uid_obj != NULL && cJSON_IsString(uid_obj) && uid_obj->valuestring != NULL) {
+                    printf("Found! ID: %d, UID: %s\n", target_id, uid_obj->valuestring);
+                    found = 1;
+                    break; // 找到后通常可以退出循环
+                } else {
+                    printf("Found ID: %d, but 'uid' field is missing or invalid.\n", target_id);
+                    found = 1;
+                    break;
+                }*/
+                cJSON *new_obj = cJSON_CreateObject();
+                if (new_obj) {
+                    cJSON_AddStringToObject(new_obj, "id", target_home_id.c_str());
+                    cJSON_AddNumberToObject(new_obj, "uid", (double)uid_int);
+                    cJSON_AddItemToArray(homes_id_array, new_obj);
+                }
+                break; // 找到后退出循环
+            }   
+        }
+    }
+
+    else if (target_home_id.empty()) {   // 如果id空白就列表     
+        s_make_id_array("id","uid", home_list, homes_id_array); // 可能之后要增加名字 方便用名字直接控制
+    }
+      
+    // cJSON* device_array = cJSON_CreateObject(); // 创建一个设备主列表, 用完要delete
+    cJSON* device_array = cJSON_CreateArray(); // 创建一个设备主列表, 用完要delete
+    cJSON *devitem = NULL; 
+    cJSON_ArrayForEach(devitem, homes_id_array) {   // 获取每个id设备列表 加到主列表
+        cJSON *id_obj = cJSON_GetObjectItemCaseSensitive(devitem, "id");
+        cJSON *uid_obj = cJSON_GetObjectItemCaseSensitive(devitem, "uid");
+
+        if ( !(id_obj || cJSON_IsString(id_obj)  ||  id_obj->valuestring != NULL ||
+            uid_obj || cJSON_IsString(uid_obj) || uid_obj->valuestring != NULL)) {
+            return std::unexpected("获取id,uid失败");
+        }
             const char *id_str = id_obj->valuestring;
             const char *uid_str = uid_obj->valuestring; // 取出id uid
-
-            std::string devices_json;
-            request_devices(id_str, uid_str, devices_json, error);  //id, owner, 设备列表, 错误
+            ESP_LOGI("cJSON_ArrayForEach", "ID： %s", id_str);
+            /*学习一下三元写法
+            #define SAFE_GET_STRING(item) ((item) && cJSON_IsString(item) ? (item)->valuestring : NULL)
+            const char *id_str = SAFE_GET_STRING(id_obj);
+            const char *id_str =  ((id_obj) && cJSON_IsString(id_obj) ? (id_obj)->valuestring : NULL);*/
             
+            std::string devices_json;   // 获取设备列表
+            request_devices(id_str, uid_str, devices_json, error);  //id, owner, 设备列表, 错误
             /*         之后改成bool 前面套一个 if(!)     
             if (!request_devices(id_str, uid_str, devices_json, error)) {
                     return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
                     ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
             }*/
-            /*学习一下三元写法
-            #define SAFE_GET_STRING(item) ((item) && cJSON_IsString(item) ? (item)->valuestring : NULL)
-            const char *id_str = SAFE_GET_STRING(id_obj);
-            const char *id_str =  ((id_obj) && cJSON_IsString(id_obj) ? (id_obj)->valuestring : NULL);*/
-
-            cJSON* result_data;
-            RequestResults(devices_json, &result_data); // 包含parse 返回result内容
-            // 这个需要另外调用删除函数吗？ 隔两层,result下面再devicee info
+            cJSON* result_data = NULL;
+            RequestResults(devices_json, &result_data); // 包含parse 返回result内容,需要另外调用删除
             cJSON* device_info = cJSON_GetObjectItemCaseSensitive(result_data, "device_info");
+            // 取出result内device_info
 
-            // 下面开始精简
-            if (!cJSON_IsArray(device_info)) {
-            return std::unexpected("米家设备列表响应缺少设备数组");
-            }
-
-            // === 【核心优化：数据瘦身】只提取大模型和 MCP 需要的关键字段 ===
-            cJSON* d_did = cJSON_GetObjectItemCaseSensitive(device_info, "did");	//string
-            cJSON* d_name = cJSON_GetObjectItemCaseSensitive(device_info, "name");	//string
-            cJSON* d_model = cJSON_GetObjectItemCaseSensitive(device_info, "model");	//string
-            cJSON* d_spec_type = cJSON_GetObjectItemCaseSensitive(device_info, "spec_type"); //string
-            cJSON* d_status = cJSON_GetObjectItemCaseSensitive(device_info, "isOnline"); // True False bool值
-            // 这边的uid是数字 需要的话用前面的就好
-            
-            //创建精简版对象
-            cJSON* slim_dev = cJSON_CreateObject();
-            if (d_did && d_did->valuestring) cJSON_AddStringToObject(slim_dev, "did", d_did->valuestring);
-            if (d_name && d_name->valuestring) cJSON_AddStringToObject(slim_dev, "name", d_name->valuestring);
-            if (d_model && d_model->valuestring) cJSON_AddStringToObject(slim_dev, "model", d_model->valuestring);
-            if (d_spec_type && d_spec_type->valuestring) cJSON_AddStringToObject(slim_dev, "spec_type", d_spec_type->valuestring);
-            if (d_status && cJSON_IsBool(d_status)) {
-                    if (cJSON_IsTrue(d_status)) cJSON_AddBoolToObject(slim_dev, "isOnline", true);
-                    else cJSON_AddBoolToObject(slim_dev, "isOnline", false);
-            }
-            cJSON_AddStringToObject(slim_dev, "id", id_str);    // 加入id
-            // 再加入home name
-                // 如果id是数字或者是字符串，适配安全取法：
-            // 建议使用 cJSON_IsString(h_id) ? h_id->valuestring : std::to_string((long long)h_id->valuedouble).c_str()
-            
-            // 深拷贝，使其独立，安全地释放原始大对象
-            cJSON *slimmed_dev = cJSON_Duplicate(slim_dev, 1);
-            cJSON_Delete(result_data);  //是 Duplicate 出来的独立对象，必须手动释放 每个循环用完要删掉
-            cJSON_AddItemToArray(device_array, slimmed_dev);
-
-            //std::unique_ptr<char, decltype(&std::free)> devices_string(cJSON_PrintUnformatted(slim_devices_array), std::free);
-            //cJSON_Delete(slim_devices_array); 转换完一定要释放
-
-            //if (!devices_string) {
-            //    return std::unexpected("无法序列化精简后的米家设备列表");
-            //}
-            //return std::string(devices_string.get());
-            //前面的这个应该也要释放 cJSON* homes_id_array = cJSON_CreateArray();
-            ///上面是精简
+        // 下面开始精简
+        if (!cJSON_IsArray(device_info)) {  // device_info空白报错
+        return std::unexpected("米家设备列表响应缺少设备数组");
         }
-        //下面是先测试看输出用的 理论上输出精简过的列表
-               /*
-            然后加入homeid home名字
-        然后delay个半秒钟
-        */
-        std::unique_ptr<char, decltype(&std::free)> dev_string(cJSON_PrintUnformatted(device_array),
-                                                                std::free);
-        cJSON_Delete(device_array); // 清理临时创建的 cJSON 对象   
+
+        int devsize = cJSON_GetArraySize(device_info);
+        for (int i = 0; i < devsize; i++) { // 遍历数组，精简完添加到device_array
+            // 获取数组中的第 i 个元素（这是一个对象）
+            cJSON *device_obj = cJSON_GetArrayItem(device_info, i);
+            if (device_obj != NULL && cJSON_IsObject(device_obj)) {
+                // === 【核心优化：数据瘦身】只提取大模型和 MCP 需要的关键字段 ===
+                cJSON* d_did = cJSON_GetObjectItemCaseSensitive(device_obj, "did");	//string
+                cJSON* d_name = cJSON_GetObjectItemCaseSensitive(device_obj, "name");	//string
+                cJSON* d_model = cJSON_GetObjectItemCaseSensitive(device_obj, "model");	//string
+                cJSON* d_spec_type = cJSON_GetObjectItemCaseSensitive(device_obj, "spec_type"); //string
+                cJSON* d_status = cJSON_GetObjectItemCaseSensitive(device_obj, "isOnline"); // True False bool值
+                // 这边的uid是数字 需要的话用前面的就好
+                // const char *name_str = d_name->valuestring;
+                // ESP_LOGI("cJSON_ArrayForEach", "name： %s", name_str);
+                // 安全校验并读取
+                if (d_model != NULL && cJSON_IsString(d_model)) {
+                    const char *model_str = d_model->valuestring;
+                    ESP_LOGI("cJSON_ArrayForEach", "model: %s", model_str);
+                } 
+
+                //创建精简版对象
+                // cJSON* slim_dev = cJSON_CreateObject();
+                cJSON* slim_dev = cJSON_CreateArray();
+                if (d_did && d_did->valuestring) cJSON_AddStringToObject(slim_dev, "did", d_did->valuestring);
+                if (d_name && d_name->valuestring) cJSON_AddStringToObject(slim_dev, "name", d_name->valuestring);
+                if (d_model && d_model->valuestring) cJSON_AddStringToObject(slim_dev, "model", d_model->valuestring);
+                if (d_spec_type && d_spec_type->valuestring) cJSON_AddStringToObject(slim_dev, "spec_type", d_spec_type->valuestring);
+                if (d_status && cJSON_IsBool(d_status)) {
+                        if (cJSON_IsTrue(d_status)) cJSON_AddBoolToObject(slim_dev, "isOnline", true);
+                        else cJSON_AddBoolToObject(slim_dev, "isOnline", false);
+                }
+                cJSON_AddStringToObject(slim_dev, "id", id_str);    // 加入id
+                // 之后看看要不要再加入home name
+                // 如果id是数字或者是字符串，适配安全取法：
+                // 建议使用 cJSON_IsString(h_id) ? h_id->valuestring : std::to_string((long long)h_id->valuedouble).c_str() 
+                cJSON_AddItemToArray(device_array, slim_dev);    // 加到device_array内
+            }
+        }
+        ///上面是精简
+    }
+    cJSON_Delete(result_data);
+    cJSON_Delete(result_homelist);  // 循环完释放循环列表
+    cJSON_Delete(homes_id_array); // 释放内存：只需释放根节点，子节点会递归释放
+
+    std::unique_ptr<char, decltype(&std::free)> dev_string(cJSON_PrintUnformatted(device_array),
+                                                            std::free);
+    cJSON_Delete(device_array); // 清理临时创建的 cJSON 对象   
         // 【重要】因为 result_data 是 Duplicate 出来的独立对象，必须手动释放
         // cJSON_Delete(result_data);
         //return std::string(dev_string.get()); //返回dev string
@@ -1094,15 +1127,9 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id) {
         } else {
             ESP_LOGE(TAG, "设备info解析失败");
         }
-        // 最后释放副本
-        cJSON_Delete(result_homelist);
-                return std::string(dev_string.get()); //返回dev string
-        }
-    /* 
 
-    id空白结束,开始指定id
-    else 单个id获取设备列表
-///
+       //         return std::string(dev_string.get()); //返回dev string
+    /* 
                 devices.extend(ret["device_info"])
                 start_did = ret.get("max_did", "")
                 has_more = ret.get("has_more", False) and start_did != ""
@@ -1111,11 +1138,10 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id) {
                 ///                            
     return std::string(id_string.get());
     }
-    return std::string("6666"); // 这里是一个占位符，表示获取设备列表的逻辑还未实现
 */
     // 【重要】因为 result_data 是 Duplicate 出来的独立对象，必须手动释放
     //cJSON_Delete(result_data);
-    return "1";
+    return "1"; // 这里是一个占位符，表示获取设备列表的逻辑还未实现
 }
 
 ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id) {
@@ -1151,7 +1177,6 @@ ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id) {
     vSemaphoreDelete(completed);
     return std::move(context.result);
 }
-
 
 std::string RandomString(size_t length, const char* alphabet) {
     std::string result(length, '\0');
