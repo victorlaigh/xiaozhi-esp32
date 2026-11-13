@@ -1035,7 +1035,7 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id) {
     // cJSON* device_array = cJSON_CreateObject(); // 创建一个设备主列表, 用完要delete
     cJSON* device_array = cJSON_CreateArray(); // 创建一个设备主列表, 用完要delete
     cJSON *devitem = NULL; 
-    cJSON_ArrayForEach(devitem, home_ids) {   // 获取每个id设备列表 加到主列表
+    cJSON_ArrayForEach(devitem, homes_id_array) {   // 获取每个id设备列表 加到主列表
         taskYIELD();
         cJSON *id_obj = cJSON_GetObjectItemCaseSensitive(devitem, "id");
         cJSON *uid_obj = cJSON_GetObjectItemCaseSensitive(devitem, "uid");
