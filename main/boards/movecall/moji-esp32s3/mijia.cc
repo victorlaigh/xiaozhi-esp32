@@ -493,12 +493,11 @@ std::expected<MijiaAuthCredentials, ToolResult> LoadMijiaAuth() {
 // 凭证区域结束
 
 // 封装成Request 登录信息那些包含
-bool RequestApi(const std::string& uri,  cJSON* request_data_obj, 
-                std::string& response_json, std::string& error) {
+bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& response_json, 
+                std::string& error) {
     std::string api_base_url = "https://api.mijia.tech/app";    //base url
     std::string api_url = api_base_url + uri;
-    //ESP_LOGI(TAG, "%s", api_url);
-    //ESP_LOGI(TAG, "%s", api_url.c_str());
+    //ESP_LOGI(TAG, "%s", api_url); //ESP_LOGI(TAG, "%s", api_url.c_str());
 
     if (!mijia_crypto_ready) {  // 等加密模块初始化
         error = "米家加密模块初始化失败，请重启设备后重试";
@@ -515,11 +514,12 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj,
     const auto& creds = auth_result.value();
 
     std::unique_ptr<cJSON, decltype(&cJSON_Delete)> request_data(request_data_obj, cJSON_Delete);
-    if (request_data == nullptr) {
+    if (request_data == nullptr) {  // 检查请求数据
         error = "无效的请求数据";
         return false;
     }
 
+    /* 打包请求数据成米家加密格式 */
     std::unique_ptr<char, decltype(&std::free)> data_json(
         cJSON_PrintUnformatted(request_data.get()), std::free);
     std::string nonce;
@@ -617,6 +617,76 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj,
     return DecodeApiResponse(response.body, signed_nonce, response_json, error);
 }
 
+bool Refresh_token(std::string& error){   // 刷新Token
+	auto auth_result = LoadMijiaAuth();    // 按需加载当前最新的登录凭证
+	if (!auth_result.has_value()) {
+		error = "尚未登录米家，请先完成扫码登录";
+		// cJSON_Delete(request_data_obj);
+		return false;
+	}
+	const auto& creds = auth_result.value();
+	const std::string user_agent = creds.user_agent;
+	
+	Settings auth("mijia_auth");
+    const std::string pass = auth.GetString("pass_token");
+	// 组装 Cookies
+	std::map<std::string, std::string> cookies = {	//加入pass_token
+		{"cUserId", creds.c_user_id},
+		{"passToken", pass},
+		{"serviceToken", creds.service_token},
+		{"timezone", "GMT+08:00"},
+		{"is_daylight", "0"},
+		{"dst_offset", "0"},
+		{"channel", "MI_APP_STORE"},
+		{"countryCode", "CN"},
+		{"PassportDeviceId", creds.device_id},
+		{"locale", "zh_CN"},
+		
+	};
+
+    std::string body;
+	if (!GetMijiaUrl(   // 登录链接,刷新Token用
+			"https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=mijia&_locale=zh_CN",
+			user_agent, cookies, 15000, body, error)) {
+		return false;
+	}	// 函数包含status code 200检验了
+	
+	std::unique_ptr<cJSON, decltype(&cJSON_Delete)> refresh(ParseMijiaJson(body),
+															   cJSON_Delete);
+	
+	if (!refresh || JsonCode(refresh.get()) != 0) {
+		error = refresh ? "获取刷新失败" : "刷新错误";
+		return false;
+	}	//错误内容如果有在desc栏位 refresh.get("desc").c_str
+	const std::string location = JsonString(refresh.get(), "location");
+	if(location.empty()) {	//空白响应的话
+		error = "刷新失败,得重新登录";
+		return false;	
+	} 
+	
+	const std::string c_user_id = JsonString(refresh.get(), "cUserId");
+	const std::string ssecurity = JsonString(refresh.get(), "ssecurity");
+
+	std::string service_token;
+	auto service_cookie = cookies.find("serviceToken");	 //现在是cookies.find("serviceToken") 改成判断有没有
+	if (service_cookie != cookies.end()) {
+		service_token = service_cookie->second;
+	}
+	if (service_token.empty()) {
+		auto alternate_cookie = cookies.find("yetAnotherServiceToken");
+		if (alternate_cookie != cookies.end()) {
+			service_token = alternate_cookie->second;
+		}
+	}
+
+	// 开始判断cookies变化 有变化保存 
+	Settings settings("mijia_auth", true);
+	if (c_user_id != creds.c_user_id) settings.SetString("cuser_id", c_user_id);
+	if (service_token != creds.service_token) settings.SetString("service_tok", service_token);
+	if (ssecurity != creds.ssecurity) settings.SetString("ssecurity", ssecurity);
+	ESP_LOGI("refresh", "应该是刷新了");
+	return true;
+}
 // 取出results
 //std::expected<const cJSON*, std::string> RequestResults(std::string& response){
 bool RequestResults(std::string& response, cJSON** results){
@@ -664,6 +734,7 @@ bool RequestResults(std::string& response, cJSON** results){
 }
 
 bool RequestHomes(std::string& homes_json, std::string& error) {
+    Refresh_token(error);   //刷新token的检查
     static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
     cJSON* request_data = cJSON_CreateObject(); // 在requestApi声明过删除参数
     if (request_data == nullptr || !cJSON_AddBoolToObject(request_data, "fg", true) ||
@@ -680,7 +751,8 @@ bool RequestHomes(std::string& homes_json, std::string& error) {
     return RequestApi(kUri, request_data, homes_json, error);
 }
 
-bool RequestDevices(std::string& devices, std::string& error, const std::string& target_home_id = "") {
+//准备删
+bool OOORequestDevices(std::string& devices, std::string& error, const std::string& target_home_id = "") {
   
     if (target_home_id.empty()) {
         std::string response;
@@ -1275,7 +1347,7 @@ private:
         context.cookies["channel"] = "MI_APP_STORE";
 
         std::string body;
-        if (!GetMijiaUrl(
+        if (!GetMijiaUrl(   // 登录链接,刷新Token用
                 "https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=mijia&_locale=zh_CN",
                 context.user_agent, context.cookies, 15000, body, error)) {
             return false;
