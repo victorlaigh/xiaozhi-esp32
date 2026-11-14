@@ -1046,6 +1046,7 @@ static void request_devices(const char *id, const char *uid, std::string& device
 ToolResult GetDevicesListInternal(const std::string& target_home_id) {
     std::string response;
     std::string error;
+    // 就算指定id也需要获取uid 所以都要home列表
         
     if (!RequestHomes(response, error)) {   // Request空白报错
         return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
