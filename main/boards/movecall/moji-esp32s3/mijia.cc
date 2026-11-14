@@ -825,15 +825,17 @@ ToolResult ListHomes() {
     cJSON_ArrayForEach(home_item, homes) {
         cJSON* h_id = cJSON_GetObjectItemCaseSensitive(home_item, "id");
         cJSON* h_name = cJSON_GetObjectItemCaseSensitive(home_item, "name");
-        
+        cJSON* h_uid = cJSON_GetObjectItemCaseSensitive(home_item, "uid");
+
         // 创建一个精简版的家庭对象
         cJSON* slim_home = cJSON_CreateObject();
         if (h_id) cJSON_AddStringToObject(slim_home, "id", h_id->valuestring ? h_id->valuestring : std::to_string(h_id->valuedouble).c_str());
         // 如果id是数字或者是字符串，适配安全取法：
         // 建议使用 cJSON_IsString(h_id) ? h_id->valuestring : std::to_string((long long)h_id->valuedouble).c_str()
         if (h_name) cJSON_AddStringToObject(slim_home, "name", h_name->valuestring ? h_name->valuestring : "");
-        
-        // 如果你还需要房间列表，可以只保留房间的名字和id，丢弃几十个设备的 dids 数组：
+        if (h_uid) cJSON_AddStringToObject(slim_home, "uid", cJSON_IsString(h_uid) ? h_id->valuestring : std::to_string(h_uid->valuedouble).c_str());
+   
+        /*// 如果你还需要房间列表，可以只保留房间的名字和id，丢弃几十个设备的 dids 数组：
         const cJSON* rooms = cJSON_GetObjectItemCaseSensitive(home_item, "roomlist");
         if (cJSON_IsArray(rooms)) {
             cJSON* slim_rooms_array = cJSON_CreateArray();
@@ -852,12 +854,11 @@ ToolResult ListHomes() {
             }
             cJSON_AddItemToObject(slim_home, "rooms", slim_rooms_array);
         }
-        
+        */
         cJSON_AddItemToArray(slim_homes_array, slim_home);
-
     }
            // 【重要】因为 result_data 是 Duplicate 出来的独立对象，必须手动释放
-        cJSON_Delete(result_data);
+    cJSON_Delete(result_data);
     // std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(homes),
     //                                                         std::free);
      // 原本得json改成序列化精简后的 JSON
