@@ -930,7 +930,7 @@ static void request_devices(const char *id, const char *uid, std::string& device
     //ESP_LOGI("request_devices", "执行完，如果错误： %s", error.c_str());
 }
 
-ToolResult GetDevicesListInternal(const std::string& target_home_id) {
+ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::string& target_home_uid) {
     std::string response;
     std::string error;
     // 就算指定id也需要获取uid 所以都要home列表
@@ -953,42 +953,14 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id) {
     cJSON* homes_id_array = cJSON_CreateArray();    // id uid列表, 用完之后要delete
     if (!target_home_id.empty()) {   // 如果id不空白,都放homes_id_array 有id就一组 可能也要名字？
         ESP_LOGI("GetDevicesListInternal", "指定ID： %s", target_home_id.c_str());
-        int array_size = cJSON_GetArraySize(home_list);
-        int uid_int = 0;
-        for (int i = 0; i < array_size; i++) {  // 遍历数组
-            // 获取数组中的第 i 个元素（这是一个对象）
-            cJSON *item = cJSON_GetArrayItem(home_list, i);
-            //ESP_LOGI("cJSON_GetArrayItem", "第： %d", i);
-            if (item == NULL || !cJSON_IsObject(item)) {
-                continue; // 跳过非对象元素
-            }
-            cJSON *id_obj = cJSON_GetObjectItemCaseSensitive(item, "id");   // 获取当前对象的 "id" 字段
-            // 跳过检查 id 字段是否存在且是数字类型 if (id_obj != NULL && cJSON_IsNumber(id_obj)) {
-            //if (id_obj->valueint == target_id) {             // 比较 id 值
-            if (id_obj->valuestring == target_home_id) {    // 匹配项，提取 "uid"               
-                cJSON *uid_obj = cJSON_GetObjectItemCaseSensitive(item, "uid");
-                // int uid_int = uid_obj->valueint;
-                std::string uid_int = std::to_string(uid_obj->valuedouble);
-                ESP_LOGI("GetDevicesListInternal", "UID： %f", uid_int);
-                /* 数字判断之类 先不用
-                if (uid_obj != NULL && cJSON_IsString(uid_obj) && uid_obj->valuestring != NULL) {
-                    printf("Found! ID: %d, UID: %s\n", target_id, uid_obj->valuestring);
-                    found = 1;
-                    break; // 找到后通常可以退出循环
-                } else {
-                    printf("Found ID: %d, but 'uid' field is missing or invalid.\n", target_id);
-                    found = 1;
-                    break;
-                }*/
-                cJSON *new_obj = cJSON_CreateObject();
-                if (new_obj) {
-                    cJSON_AddStringToObject(new_obj, "id", target_home_id.c_str());
-                    //cJSON_AddNumberToObject(new_obj, "uid", (double)uid_int);
-                    cJSON_AddStringToObject(new_obj, "uid", uid_int.c_str());
-                    cJSON_AddItemToArray(homes_id_array, new_obj);
-                }
-                break; // 找到后退出循环
-            }   
+        // Refresh_token(error);   //刷新token的检查
+
+        cJSON *new_obj = cJSON_CreateObject();
+        if (new_obj) {
+            cJSON_AddStringToObject(new_obj, "id", target_home_id.c_str());
+            //cJSON_AddNumberToObject(new_obj, "uid", (double)uid_int);
+            cJSON_AddStringToObject(new_obj, "uid", target_home_uid.c_str());
+            cJSON_AddItemToArray(homes_id_array, new_obj);
         }
     }
 
@@ -1013,7 +985,7 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id) {
         
         const char *id_str = id_obj->valuestring;
         const char *uid_str = uid_obj->valuestring; // 取出id uid
-        ESP_LOGI("cJSON_ArrayForEach", "ID： %s", id_str);
+        ESP_LOGI("不指定家庭", "ID： %s", id_str);
         /*学习一下三元写法
         #define SAFE_GET_STRING(item) ((item) && cJSON_IsString(item) ? (item)->valuestring : NULL)
         const char *id_str = SAFE_GET_STRING(id_obj);
@@ -1109,9 +1081,10 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id) {
 */
 }
 
-ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id) {
+ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id, const std::string& home_uid) {
     struct TaskContext {
         std::string home_id;
+        std::string home_uid;
         SemaphoreHandle_t completed;
         ToolResult result;
     };
@@ -1121,11 +1094,11 @@ ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id) {
         return std::unexpected("无法创建米家设备列表任务同步对象");
     }
 
-    TaskContext context{home_id, completed, std::unexpected("米家设备列表任务未完成")};
+    TaskContext context{home_id, home_uid, completed, std::unexpected("米家设备列表任务未完成")};
     const BaseType_t task_status = xTaskCreate(
         [](void* arg) {
             auto* ctx = static_cast<TaskContext*>(arg);
-            ctx->result = GetDevicesListInternal(ctx->home_id);
+            ctx->result = GetDevicesListInternal(ctx->home_id, ctx->home_uid);
             ESP_LOGI(TAG, "Mijia devices task stack remaining: %u bytes",
                      static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
             xSemaphoreGive(ctx->completed);
@@ -1573,18 +1546,20 @@ void InitializeMojiMijiaTool(Display* display) {
     
     McpServer::GetInstance().AddTool(
         "self.mijia.get_devices_list",
-        "获取米家设备列表。可选参数 home_id：传入则筛选该家庭下的设备，不传则获取全部。"
-        "用户没有指定哪个家庭的话,默认就不传入参数,指定的话用list_homes工具查看id传入",
+        "获取米家设备列表。可选参数 home_id 跟home_uid,传入则筛选该家庭下的设备，不传则获取全部。"
+        "用户没有指定哪个家庭的话,默认就不传入参数,有指定的话用list_homes工具查看对应id及uid传入",
 
         []() {
             PropertyList p;
             p.AddProperty(Property("home_id", kPropertyTypeString, std::string("")));
+            p.AddProperty(Property("home_uid", kPropertyTypeString, std::string("")));
             return p;
         }(), // 这是一个立即执行的 Lambda，直接返回构造好的 PropertyList
 
         [](const PropertyList& args) -> ToolResult {
             std::string home_id = args["home_id"].value<std::string>();
-            return GetDevicesListOnDedicatedStack(home_id);
+            std::string home_uid = args["home_uid"].value<std::string>();
+            return GetDevicesListOnDedicatedStack(home_id, home_uid);
         });
 }
 
