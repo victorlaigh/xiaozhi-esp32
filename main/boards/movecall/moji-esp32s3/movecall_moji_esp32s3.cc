@@ -397,8 +397,7 @@ public:
             lv_obj_set_style_text_font(city_label_, &font_noto_sans_basic_20_4, 0);
             lv_obj_set_style_text_align(city_label_, LV_TEXT_ALIGN_CENTER, 0);
             lv_label_set_text(city_label_, "定位中");
-            lv_obj_align(city_label_, LV_ALIGN_TOP_MID, 0, 30);
-            // 水平居中，距离顶部30px,比原本少8
+            lv_obj_align(city_label_, LV_ALIGN_TOP_MID, 0, 29);
 
             date_label_ = lv_label_create(screen);
             lv_obj_set_width(date_label_, LV_HOR_RES - 32);

@@ -36,6 +36,8 @@
 
 #include "qrcodegen.h"
 
+std::mutex http_mutex;
+
 namespace {
 
 constexpr char TAG[] = "MojiMcp";
@@ -619,14 +621,14 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
     return DecodeApiResponse(response.body, signed_nonce, response_json, error);
 }
 
-bool Refresh_token(std::string& error){   // 刷新Token
+ToolResult Refresh_token(std::string& error){   // 刷新Token
+    // return std::unexpected(error); 原本bool 改这个试试 可以输出错误了
 	ESP_LOGI("刷新", "Start"); 
     auto auth_result = LoadMijiaAuth();    
-    // 多一个判断 如果ok就不用刷新的判断 按需加载当前最新的登录凭证
+    // 这边要多一个判断 如果ok就不用刷新的判断 按需加载当前最新的登录凭证
 
 	const auto& creds = auth_result.value();
 	const std::string user_agent = creds.user_agent;
-    const std::string usss = creds.ssecurity;
 	
 	Settings auth("mijia_auth");
     const std::string pass = auth.GetString("pass_token");
@@ -652,13 +654,8 @@ bool Refresh_token(std::string& error){   // 刷新Token
 		return false;
 	}	// 函数包含status code 200检验了
 
-	std::unique_ptr<cJSON, decltype(&cJSON_Delete)> refresh(ParseMijiaJson(body),
-															   cJSON_Delete);
+	std::unique_ptr<cJSON, decltype(&cJSON_Delete)> refresh(ParseMijiaJson(body), cJSON_Delete);
 
-    //if (!refresh) ESP_LOGE("刷新", "!refresh");
-    //if (JsonCode(refresh.get()) != 0) ESP_LOGE("刷新", "!code");
-    ///
-     
     //auto cccc = cookies.find("serviceToken");
     //if (cccc != cookies.end()) {
     //    ESP_LOGI("ccc", "Session ID: %s", cccc->second.c_str());
@@ -678,7 +675,6 @@ bool Refresh_token(std::string& error){   // 刷新Token
 
     const std::string c_user_id = JsonString(refresh.get(), "cUserId");
 	const std::string ssecurity = JsonString(refresh.get(), "ssecurity");
-    //const std::string service_token = JsonString(refresh.get(), "service_tok");
     const std::string user_id = JsonString(refresh.get(), "userId");
     const std::string pass_token = JsonString(refresh.get(), "passToken");
     //const std::string psecurity = JsonString(refresh.get(), "psecurity");
@@ -698,7 +694,7 @@ bool Refresh_token(std::string& error){   // 刷新Token
 	Settings settings("mijia_auth", true);
 	if (c_user_id != creds.c_user_id) settings.SetString("cuser_id", c_user_id);
 	//if (service_token != creds.service_token && !service_token.empty() ) settings.SetString("service_tok", service_token);
-	settings.SetString("ssecurity", ssecurity);
+	if (ssecurity != creds.ssecurity) settings.SetString("ssecurity", ssecurity);
     if (pass_token != pass) settings.SetString("pass_token", pass_token);
     if (user_id != userid) settings.SetString("user_id", user_id); 
     //if (passo != pass) settings.SetString("ssecurity", ssecurity); //pass_o 不用动device_id  user_agent也是
@@ -727,11 +723,10 @@ bool Refresh_token(std::string& error){   // 刷新Token
         return false;
     }
 
-
-	ESP_LOGI("refresh", "应该是刷新了");
-    std::string aaa = auth.GetString("pass_token");
-    ESP_LOGI("aaa", "%s", aaa.c_str());
-	return true;
+	ESP_LOGI("refresh", "刷新完成");
+    // std::string aaa = auth.GetString("pass_token");
+    // ESP_LOGI("aaa", "%s", aaa.c_str());
+	return std::string("登录状态成功刷新");
 }
 // 取出results
 //std::expected<const cJSON*, std::string> RequestResults(std::string& response){
@@ -873,7 +868,9 @@ ToolResult ListHomes() {
     }
 
     // === 【优化核心】在这里对庞大的 JSON 进行裁剪，只提取核心轻量数据 ===
-    cJSON* slim_homes_array = cJSON_CreateArray();
+    //cJSON* slim_homes_array = cJSON_CreateArray();
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> slim_homes_array(cJSON_CreateArray(), &cJSON_Delete);
+
     cJSON* home_item = NULL;
     
     cJSON_ArrayForEach(home_item, homes) {
@@ -910,16 +907,20 @@ ToolResult ListHomes() {
             cJSON_AddItemToObject(slim_home, "rooms", slim_rooms_array);
         }
         */
-        cJSON_AddItemToArray(slim_homes_array, slim_home);
+        //cJSON_AddItemToArray(slim_homes_array, slim_home); 改智能指针
+        cJSON_AddItemToArray(slim_homes_array.get(), slim_home);
     }
            // 【重要】因为 result_data 是 Duplicate 出来的独立对象，必须手动释放
     cJSON_Delete(result_data);
     // std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(homes),
     //                                                         std::free);
      // 原本得json改成序列化精简后的 JSON
-    std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(slim_homes_array),
+    //std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(slim_homes_array),
+    //                                                         std::free);
+    std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(slim_homes_array.get()),
                                                              std::free);
-    cJSON_Delete(slim_homes_array); // 清理临时创建的 cJSON 对象                                                         
+    // cJSON_Delete(slim_homes_array); // 清理临时创建的 cJSON 对象                                                         
+    // 改智能对象试试
 
     if (!homes_string) {
         return std::unexpected("无法序列化精简后的米家家庭列表");
@@ -986,6 +987,8 @@ static void request_devices(const char *id, const char *uid, std::string& device
 }
 
 ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::string& target_home_uid) {
+    //std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    std::lock_guard<std::mutex> lock(http_mutex);   // 加个锁试试
     std::string error;
     cJSON* homes_id_array = cJSON_CreateArray();    // id uid列表, 用完之后要delete
     if (!target_home_id.empty()) {   // 如果id不空白,都放homes_id_array 有id就一组 可能也要名字？
@@ -1004,7 +1007,7 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
     else if (target_home_id.empty()) {   // 如果id空白就列表  
         std::string response;
         if (!RequestHomes(response, error)) {   // Request空白报错
-            return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
+            return std::unexpected(error.empty() ? "获取所有设备时家庭列表失败" : error);
             ESP_LOGE("不指定", "获取家庭列表失败: %s", error.c_str());
         }
         cJSON* result_data = nullptr;
@@ -1057,7 +1060,9 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
         if(!RequestResults(devices_json, &result_data)) { // 包含parse 返回result内容,要调用删除函数
             return std::unexpected("设备Result内容读取失败");  // 取出得Result空白报错
         } 
-        cJSON* device_info = cJSON_GetObjectItemCaseSensitive(result_data, "device_info");
+        cJSON* device_info = cJSON_DetachItemFromObject(result_data, "device_info"); //新的
+        cJSON_Delete(result_data);  // 循环完删掉,包含device_info (device_obj)    改成deviceinfo
+        // cJSON* device_info = cJSON_GetObjectItemCaseSensitive(result_data, "device_info");
         // 取出result内device_info
 
         // 下面开始精简
@@ -1067,7 +1072,6 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
 
         int devsize = cJSON_GetArraySize(device_info);
         cJSON* array_perid = cJSON_CreateArray(); // 创建id的设备列表, 用完要delete
-
         for (int i = 0; i < devsize; i++) { // 遍历数组，精简完添加到device_array
             vTaskDelay(10);
             // 获取数组中的第 i 个元素（这是一个对象）
@@ -1112,7 +1116,7 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
         cJSON* array_ided = cJSON_CreateObject();   //列表加入id
         cJSON_AddItemToObject(array_ided, id_str, array_perid); //array_perid管理权就‌移交array_ided
         cJSON_AddItemToArray(device_array, array_ided);    // 加到device_array内
-        cJSON_Delete(result_data);  // 循环完删掉,包含device_info (device_obj)   
+        cJSON_Delete(device_info);  // 循环完删掉,包含device_info (device_obj)    本来是result_data
     }
     cJSON_Delete(homes_id_array); 
     std::unique_ptr<char, decltype(&std::free)> dev_string(cJSON_PrintUnformatted(device_array),
@@ -1622,7 +1626,8 @@ void InitializeMojiMijiaTool(Display* display) {
     McpServer::GetInstance().AddTool(
         "self.mijia.refresh",
         "刷新米家登录状态,会更新登录token"
-        "如果使用获取家庭列表或是设备列表时提示登录错误,或是服务返回 HTTP400可以刷新登录状态",
+        "如果获取家庭列表或是设备列表时提示登录错误,或是服务返回HTTP400错误可以刷新登录状态"
+        "更大概率是网络问题重试就好,实在不行再刷新",
         PropertyList(),
         [](const PropertyList&) -> ToolResult { 
                // 1. 在 Lambda 内部定义局部变量
@@ -1645,3 +1650,4 @@ void InitializeMojiMijiaTool(Display* display) {
 
 //下一步就是列出设备可操控功能 
 //跟操控设备
+//to_string(double) 可能产生多余小数位，视业务需求可改用 snprintf
