@@ -107,7 +107,8 @@ bool IsXiaomiHttpsUrl(const std::string& url) {
         return false;
     }
     static constexpr char kTrustedDomains[][12] = {"xiaomi.com", ".xiaomi.com", "mijia.com",
-                                                   ".mijia.com", "mi.com",      ".mi.com"};
+                                                   ".mijia.com", "mi.com", ".mi.com",
+                                                   "mijia.tech" };
     for (const char* domain : kTrustedDomains) {
         const size_t domain_size = std::strlen(domain);
         if (host == domain || (domain[0] == '.' && host.size() > domain_size &&
@@ -179,6 +180,7 @@ bool GetMijiaUrl(const std::string& url, const std::string& user_agent,
         std::string cookie_header = MakeCookieHeader(cookies);
         if (header_err == ESP_OK && send_cookies && trusted_host && !cookie_header.empty()) {
             header_err = esp_http_client_set_header(client, "Cookie", cookie_header.c_str());
+            // ESP_LOGI("cookies", "%s", cookie_header.c_str());
         }
         if (header_err != ESP_OK) {
             esp_http_client_cleanup(client);
@@ -241,7 +243,7 @@ std::string JsonString(const cJSON* object, const char* key) {
 
 int JsonCode(const cJSON* object) { // Parse的时候取出code
     const cJSON* value = cJSON_GetObjectItemCaseSensitive(object, "code");
-    return cJSON_IsNumber(value) ? value->valueint : 1; // 没错误的话是0
+    return cJSON_IsNumber(value) ? value->valueint : 999; // 没错误的话是0
 }
 
 bool Base64Encode(const uint8_t* input, size_t input_size, std::string& output) {
@@ -482,12 +484,12 @@ std::expected<MijiaAuthCredentials, ToolResult> LoadMijiaAuth() {
         auth.GetString("ssecurity")
     };
 
-    if (creds.service_token.empty() || creds.c_user_id.empty() || 
+    if (creds.c_user_id.empty() || creds.service_token.empty() || 
         creds.device_id.empty() || creds.user_agent.empty() || 
         creds.ssecurity.empty()) {
+        //if(creds.service_token.empty()) ESP_LOGI("获取凭证", "servicetoken空白");
         return std::unexpected(std::unexpected("尚未登录米家，请先调用 self.mijia.login 完成扫码登录"));
     }
-
     return creds;
 }
 // 凭证区域结束
@@ -618,73 +620,117 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
 }
 
 bool Refresh_token(std::string& error){   // 刷新Token
-	auto auth_result = LoadMijiaAuth();    // 按需加载当前最新的登录凭证
-	if (!auth_result.has_value()) {
-		error = "尚未登录米家，请先完成扫码登录";
-		// cJSON_Delete(request_data_obj);
-		return false;
-	}
+	ESP_LOGI("刷新", "Start"); 
+    auto auth_result = LoadMijiaAuth();    
+    // 多一个判断 如果ok就不用刷新的判断 按需加载当前最新的登录凭证
+
 	const auto& creds = auth_result.value();
 	const std::string user_agent = creds.user_agent;
+    const std::string usss = creds.ssecurity;
 	
 	Settings auth("mijia_auth");
     const std::string pass = auth.GetString("pass_token");
+    const std::string passo = auth.GetString("pass_o");
+    const std::string userid = auth.GetString("user_id");
+    // ESP_LOGI("刷新", "%s", pass.c_str()); 
+
 	// 组装 Cookies
 	std::map<std::string, std::string> cookies = {	//加入pass_token
 		{"cUserId", creds.c_user_id},
 		{"passToken", pass},
-		{"serviceToken", creds.service_token},
-		{"timezone", "GMT+08:00"},
-		{"is_daylight", "0"},
-		{"dst_offset", "0"},
-		{"channel", "MI_APP_STORE"},
-		{"countryCode", "CN"},
-		{"PassportDeviceId", creds.device_id},
-		{"locale", "zh_CN"},
-		
+		{"pass_o", passo},
+		{"userId", userid},
+		{"uLocale", "zh_CN"},
+		{"deviceId", creds.device_id}
 	};
 
     std::string body;
 	if (!GetMijiaUrl(   // 登录链接,刷新Token用
 			"https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=mijia&_locale=zh_CN",
-			user_agent, cookies, 15000, body, error)) {
+			user_agent, cookies, 15000, body, error, true, true)) {
+        ESP_LOGE("刷新", "登录失败"); 
 		return false;
 	}	// 函数包含status code 200检验了
-	
+
 	std::unique_ptr<cJSON, decltype(&cJSON_Delete)> refresh(ParseMijiaJson(body),
 															   cJSON_Delete);
-	
+
+    //if (!refresh) ESP_LOGE("刷新", "!refresh");
+    //if (JsonCode(refresh.get()) != 0) ESP_LOGE("刷新", "!code");
+    ///
+     
+    //auto cccc = cookies.find("serviceToken");
+    //if (cccc != cookies.end()) {
+    //    ESP_LOGI("ccc", "Session ID: %s", cccc->second.c_str());
+    //} 
+
 	if (!refresh || JsonCode(refresh.get()) != 0) {
 		error = refresh ? "获取刷新失败" : "刷新错误";
+        ESP_LOGE("刷新", "错误"); 
 		return false;
 	}	//错误内容如果有在desc栏位 refresh.get("desc").c_str
 	const std::string location = JsonString(refresh.get(), "location");
 	if(location.empty()) {	//空白响应的话
 		error = "刷新失败,得重新登录";
+        ESP_LOGE("刷新", "响应空白"); 
 		return false;	
 	} 
-	
-	const std::string c_user_id = JsonString(refresh.get(), "cUserId");
-	const std::string ssecurity = JsonString(refresh.get(), "ssecurity");
 
+    const std::string c_user_id = JsonString(refresh.get(), "cUserId");
+	const std::string ssecurity = JsonString(refresh.get(), "ssecurity");
+    //const std::string service_token = JsonString(refresh.get(), "service_tok");
+    const std::string user_id = JsonString(refresh.get(), "userId");
+    const std::string pass_token = JsonString(refresh.get(), "passToken");
+    //const std::string psecurity = JsonString(refresh.get(), "psecurity");
+    //const std::string nonce = JsonString(refresh.get(), "nonce");
+    //const std::string callback_url = JsonString(refresh.get(), "location");
+    if (user_id.empty() || c_user_id.empty() || pass_token.empty() || ssecurity.empty()) {
+        error = "刷新成功可是少东西";
+        return false;
+    }
+
+    if (!GetMijiaUrl(location, user_agent, cookies, 15000, body, error, true, true)) {
+        ESP_LOGE("刷新", "location失败"); 
+		return false;
+	}   // 妈的这个超重要 搞了两天原来是漏掉这个
+                 
+	// 开始判断cookies变化 有变化保存 
+	Settings settings("mijia_auth", true);
+	if (c_user_id != creds.c_user_id) settings.SetString("cuser_id", c_user_id);
+	//if (service_token != creds.service_token && !service_token.empty() ) settings.SetString("service_tok", service_token);
+	settings.SetString("ssecurity", ssecurity);
+    if (pass_token != pass) settings.SetString("pass_token", pass_token);
+    if (user_id != userid) settings.SetString("user_id", user_id); 
+    //if (passo != pass) settings.SetString("ssecurity", ssecurity); //pass_o 不用动device_id  user_agent也是
+    //if (psecurity.empty()) {
+    //    settings.EraseKey("psecurity");
+    //} else {
+    //    settings.SetString("psecurity", psecurity);
+    //}
+    //Settings saved_auth("mijia_auth");
+    
 	std::string service_token;
 	auto service_cookie = cookies.find("serviceToken");	 //现在是cookies.find("serviceToken") 改成判断有没有
 	if (service_cookie != cookies.end()) {
 		service_token = service_cookie->second;
+        settings.SetString("service_tok", service_token); 
 	}
 	if (service_token.empty()) {
 		auto alternate_cookie = cookies.find("yetAnotherServiceToken");
 		if (alternate_cookie != cookies.end()) {
 			service_token = alternate_cookie->second;
+            settings.SetString("service_tok", service_token); 
 		}
 	}
+    if (service_token.empty()) {
+        error = "refresh未返回服务令牌";
+        return false;
+    }
 
-	// 开始判断cookies变化 有变化保存 
-	Settings settings("mijia_auth", true);
-	if (c_user_id != creds.c_user_id) settings.SetString("cuser_id", c_user_id);
-	if (service_token != creds.service_token) settings.SetString("service_tok", service_token);
-	if (ssecurity != creds.ssecurity) settings.SetString("ssecurity", ssecurity);
+
 	ESP_LOGI("refresh", "应该是刷新了");
+    std::string aaa = auth.GetString("pass_token");
+    ESP_LOGI("aaa", "%s", aaa.c_str());
 	return true;
 }
 // 取出results
@@ -712,6 +758,9 @@ bool RequestResults(std::string& response, cJSON** results){
             message += "，错误码 " + std::to_string(JsonCode(result.get()));
         }
         if (message.empty()) {
+            std::unique_ptr<char, decltype(&std::free)> res_string(cJSON_PrintUnformatted(result.get()),
+                                                             std::free);
+            ESP_LOGW("messageempty", "内容: %s", res_string.get());
             message = "Result读取失败，错误码 " +
                     //  (cJSON_IsNumber(code) ? std::to_string(code->valueint) : "未知");
                     std::to_string(JsonCode(result.get()));
@@ -721,7 +770,7 @@ bool RequestResults(std::string& response, cJSON** results){
             std::to_string(JsonCode(result.get()));
         ESP_LOGW("RequestResults", "解析Results失败: code=%s, message=%s", code_text.c_str(),
                  message.c_str());
-        ESP_LOGW("RequestResults", "内容: %s", result.get());
+        ESP_LOGW("RequestResults", "内容: %s", result.get()->valuestring);
         //return std::unexpected(std::move(message));
         return false;
     }
@@ -734,7 +783,8 @@ bool RequestResults(std::string& response, cJSON** results){
 }
 
 bool RequestHomes(std::string& homes_json, std::string& error) {
-    Refresh_token(error);   //刷新token的检查
+    //bool a = Refresh_token(error);   //刷新token的检查
+    //ESP_LOGI("token检查", " %d ", a ); // %s string %d整数
     static constexpr char kUri[] = "/v2/homeroom/gethome_merged";
     cJSON* request_data = cJSON_CreateObject(); // 在requestApi声明过删除参数
     if (request_data == nullptr || !cJSON_AddBoolToObject(request_data, "fg", true) ||
@@ -764,8 +814,10 @@ static void s_make_id_array(const char *key, const char *uid, const cJSON *sourc
 
     cJSON *item = NULL;
     cJSON_ArrayForEach(item, source_list) {
-        cJSON *val_obj = cJSON_GetObjectItemCaseSensitive(item, key);
-        cJSON *val_uid = cJSON_GetObjectItemCaseSensitive(item, uid);
+        //cJSON *val_obj = cJSON_GetObjectItemCaseSensitive(item, key);
+        //cJSON *val_uid = cJSON_GetObjectItemCaseSensitive(item, uid);
+        cJSON *val_obj = cJSON_DetachItemFromObjectCaseSensitive(item, key);
+        cJSON *val_uid = cJSON_DetachItemFromObjectCaseSensitive(item, uid);
 
         std::string str_val;
         if (val_obj) {
@@ -782,8 +834,9 @@ static void s_make_id_array(const char *key, const char *uid, const cJSON *sourc
             if (cJSON_IsString(val_uid) && val_uid->valuestring) {
                 uid_val = val_uid->valuestring;
             } else if (cJSON_IsNumber(val_uid)) {
-                // 注意：to_string(double) 可能产生多余小数位，视业务需求可改用 snprintf
-                uid_val = std::to_string(val_uid->valuedouble);
+                // 假设 val_uid 是 cJSON* 类型，且已经确认 cJSON_IsNumber(val_uid) 为真
+                long long uid_int = (long long)val_uid->valuedouble; // 或者 val_uid->valueint
+                uid_val = std::to_string(uid_int);
             }
         }
 
@@ -798,9 +851,10 @@ static void s_make_id_array(const char *key, const char *uid, const cJSON *sourc
 }
 
 ToolResult ListHomes() {
-
+    
     std::string response;
     std::string error;
+    
     if (!RequestHomes(response, error)) {
         return std::unexpected(error);  
         // return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
@@ -833,8 +887,9 @@ ToolResult ListHomes() {
         // 如果id是数字或者是字符串，适配安全取法：
         // 建议使用 cJSON_IsString(h_id) ? h_id->valuestring : std::to_string((long long)h_id->valuedouble).c_str()
         if (h_name) cJSON_AddStringToObject(slim_home, "name", h_name->valuestring ? h_name->valuestring : "");
-        if (h_uid) cJSON_AddStringToObject(slim_home, "uid", cJSON_IsString(h_uid) ? h_id->valuestring : std::to_string(h_uid->valuedouble).c_str());
-   
+        if (h_uid) cJSON_AddStringToObject(slim_home, "uid", cJSON_IsString(h_uid) ? h_uid->valuestring : std::to_string((long long)h_uid->valuedouble).c_str());
+
+        ESP_LOGI("homelist", "id %s uid %s", h_name->valuestring, std::to_string((long long)h_uid->valuedouble).c_str());
         /*// 如果你还需要房间列表，可以只保留房间的名字和id，丢弃几十个设备的 dids 数组：
         const cJSON* rooms = cJSON_GetObjectItemCaseSensitive(home_item, "roomlist");
         if (cJSON_IsArray(rooms)) {
@@ -931,25 +986,7 @@ static void request_devices(const char *id, const char *uid, std::string& device
 }
 
 ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::string& target_home_uid) {
-    std::string response;
     std::string error;
-    // 就算指定id也需要获取uid 所以都要home列表
-        
-    if (!RequestHomes(response, error)) {   // Request空白报错
-        return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
-        ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
-    }
-    
-    cJSON* result_data = nullptr;
-    if(!RequestResults(response, &result_data)) { // 包含parse 返回result内容,要调用删除函数
-        return std::unexpected("Result内容读取失败");  // 取出得Result空白报错
-    } 
-
-    const cJSON* home_list = cJSON_GetObjectItemCaseSensitive(result_data, "homelist");
-    if (!cJSON_IsArray(home_list)) {    //如果取出来不是列表报错
-        return std::unexpected("获取设备时家庭列表响应缺少 homelist");
-    }
-    
     cJSON* homes_id_array = cJSON_CreateArray();    // id uid列表, 用完之后要delete
     if (!target_home_id.empty()) {   // 如果id不空白,都放homes_id_array 有id就一组 可能也要名字？
         ESP_LOGI("GetDevicesListInternal", "指定ID： %s", target_home_id.c_str());
@@ -964,11 +1001,29 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
         }
     }
 
-    else if (target_home_id.empty()) {   // 如果id空白就列表     
+    else if (target_home_id.empty()) {   // 如果id空白就列表  
+        std::string response;
+        if (!RequestHomes(response, error)) {   // Request空白报错
+            return std::unexpected(error.empty() ? "获取米家设备列表失败" : error);
+            ESP_LOGE("不指定", "获取家庭列表失败: %s", error.c_str());
+        }
+        cJSON* result_data = nullptr;
+        if(!RequestResults(response, &result_data)) { // 包含parse 返回result内容,要调用删除函数
+            return std::unexpected("Result内容读取失败");  // 取出得Result空白报错
+        } 
+
+        const cJSON* home_list = cJSON_GetObjectItemCaseSensitive(result_data, "homelist");
+        if (!cJSON_IsArray(home_list)) {    //如果取出来不是列表报错
+            return std::unexpected("获取设备时家庭列表响应缺少 homelist");
+        }
+    
         s_make_id_array("id","uid", home_list, homes_id_array); // 可能之后要增加名字 方便用名字直接控制
+        cJSON_Delete(result_data); 
     }
 
-    cJSON_Delete(result_data); 
+    char *json_string = cJSON_PrintUnformatted(homes_id_array);
+    ESP_LOGI("array", "JSON Array Content: %s", json_string);
+    cJSON_free(json_string); 
 
     // cJSON* device_array = cJSON_CreateObject(); // 创建一个设备主列表, 用完要delete
     cJSON* device_array = cJSON_CreateArray(); // 创建一个设备主列表, 用完要delete
@@ -985,13 +1040,13 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
         
         const char *id_str = id_obj->valuestring;
         const char *uid_str = uid_obj->valuestring; // 取出id uid
-        ESP_LOGI("不指定家庭", "ID： %s", id_str);
+        ESP_LOGI("设备列表", "ID： %s", id_str);
         /*学习一下三元写法
         #define SAFE_GET_STRING(item) ((item) && cJSON_IsString(item) ? (item)->valuestring : NULL)
         const char *id_str = SAFE_GET_STRING(id_obj);
         const char *id_str =  ((id_obj) && cJSON_IsString(id_obj) ? (id_obj)->valuestring : NULL);*/
         
-        std::string devices_json;   // 获取设备列表
+        std::string devices_json;   // 设备列表容器
         request_devices(id_str, uid_str, devices_json, error);  //id, owner, 设备列表, 错误
         /*         之后改成bool 前面套一个 if(!)     
         if (!request_devices(id_str, uid_str, devices_json, error)) {
@@ -999,19 +1054,22 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
                 ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
         }*/
         cJSON* result_data = NULL;
-        RequestResults(devices_json, &result_data); // 包含parse 返回result内容,需要另外调用删除
+        if(!RequestResults(devices_json, &result_data)) { // 包含parse 返回result内容,要调用删除函数
+            return std::unexpected("设备Result内容读取失败");  // 取出得Result空白报错
+        } 
         cJSON* device_info = cJSON_GetObjectItemCaseSensitive(result_data, "device_info");
         // 取出result内device_info
 
         // 下面开始精简
         if (!cJSON_IsArray(device_info)) {  // device_info空白报错
-        return std::unexpected("米家设备列表响应缺少设备数组");
+        return std::unexpected("设备列表响应缺失");
         }
 
         int devsize = cJSON_GetArraySize(device_info);
         cJSON* array_perid = cJSON_CreateArray(); // 创建id的设备列表, 用完要delete
 
         for (int i = 0; i < devsize; i++) { // 遍历数组，精简完添加到device_array
+            vTaskDelay(10);
             // 获取数组中的第 i 个元素（这是一个对象）
             cJSON *device_obj = cJSON_GetArrayItem(device_info, i);
             if (device_obj != NULL && cJSON_IsObject(device_obj)) {
@@ -1019,7 +1077,7 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
                 cJSON* d_did = cJSON_GetObjectItemCaseSensitive(device_obj, "did");	//string
                 cJSON* d_name = cJSON_GetObjectItemCaseSensitive(device_obj, "name");	//string
                 cJSON* d_model = cJSON_GetObjectItemCaseSensitive(device_obj, "model");	//string
-                cJSON* d_spec_type = cJSON_GetObjectItemCaseSensitive(device_obj, "spec_type"); //string
+                //cJSON* d_spec_type = cJSON_GetObjectItemCaseSensitive(device_obj, "spec_type"); //string
                 cJSON* d_status = cJSON_GetObjectItemCaseSensitive(device_obj, "isOnline"); // True False bool值
                 // 这边的uid是数字 需要的话用前面的就好
                 // const char *name_str = d_name->valuestring;
@@ -1365,8 +1423,7 @@ private:
         if (!IsCurrent(generation)) {
             return false;
         }
-        std::unique_ptr<cJSON, decltype(&cJSON_Delete)> login_data(ParseMijiaJson(body),
-                                                                   cJSON_Delete);
+        std::unique_ptr<cJSON, decltype(&cJSON_Delete)> login_data(ParseMijiaJson(body), cJSON_Delete);                                                       
         if (!login_data || JsonCode(login_data.get()) != 0) {
             error = login_data ? "二维码登录未获小米账号确认" : "无法解析米家扫码结果";
             return false;
@@ -1542,12 +1599,12 @@ void InitializeMojiMijiaTool(Display* display) {
         PropertyList(),
         [](const PropertyList&) -> ToolResult { return ListHomesOnDedicatedStack(); });
 
-
     
     McpServer::GetInstance().AddTool(
         "self.mijia.get_devices_list",
         "获取米家设备列表。可选参数 home_id 跟home_uid,传入则筛选该家庭下的设备，不传则获取全部。"
-        "用户没有指定哪个家庭的话,默认就不传入参数,有指定的话用list_homes工具查看对应id及uid传入",
+        "用户没有指定哪个家庭的话,默认就不传入参数,有指定的话用list_homes工具查看对应id及uid传入"
+        "获取全部时,常常因为网路波动会失败，可以多试几次",
 
         []() {
             PropertyList p;
@@ -1561,6 +1618,29 @@ void InitializeMojiMijiaTool(Display* display) {
             std::string home_uid = args["home_uid"].value<std::string>();
             return GetDevicesListOnDedicatedStack(home_id, home_uid);
         });
+
+    McpServer::GetInstance().AddTool(
+        "self.mijia.refresh",
+        "刷新米家登录状态,会更新登录token"
+        "如果使用获取家庭列表或是设备列表时提示登录错误,或是服务返回 HTTP400可以刷新登录状态",
+        PropertyList(),
+        [](const PropertyList&) -> ToolResult { 
+               // 1. 在 Lambda 内部定义局部变量
+            std::string local_error; 
+            return Refresh_token(local_error); 
+            // 2. 调用业务函数，传入局部变量的引用
+            // 注意：确保 Refresh_token 的签名是 bool Refresh_token(std::string& err) 或类似
+            //bool success = Refresh_token(local_error);           
+            /* 3. 根据执行结果构建并返回 ToolResult
+            if (success) {
+                // 假设 ToolResult 有一个成功构造函数或静态方法
+                return ToolResult::Success("Token refreshed successfully");
+            } else {
+                // 假设 ToolResult 有一个失败构造函数，包含错误信息
+                return ToolResult::Error(local_error);
+            }*/
+        });
+
 }
 
 //下一步就是列出设备可操控功能 
