@@ -739,6 +739,11 @@ bool RequestResults(std::string& response, cJSON** results){
         return false;
     }
 
+    if (JsonCode(result.get()) != 0) {  // code不是0
+        ESP_LOGE("ReqResuTAG", "回应code: %d", JsonCode(result.get())); 
+        return false;
+    }
+    
     // 改成detach cJSON* result_data = cJSON_GetObjectItemCaseSensitive(result.get(), "result");
     cJSON* result_data = cJSON_DetachItemFromObjectCaseSensitive(result.get(), "result");
     // const cJSON* code = cJSON_GetObjectItemCaseSensitive(result.get(), "code");
