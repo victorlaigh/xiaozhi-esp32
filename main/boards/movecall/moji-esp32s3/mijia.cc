@@ -502,7 +502,7 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
     std::string api_base_url = "https://api.mijia.tech/app";    //base url
     std::string api_url = api_base_url + uri;
     //ESP_LOGI(TAG, "%s", api_url); //ESP_LOGI(TAG, "%s", api_url.c_str());
-
+    ESP_LOGI("reapi","1");
     if (!mijia_crypto_ready) {  // 等加密模块初始化
         error = "米家加密模块初始化失败，请重启设备后重试";
         cJSON_Delete(request_data_obj);
@@ -516,7 +516,7 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
         return false;
     }
     const auto& creds = auth_result.value();
-
+    ESP_LOGI("reapi","2");
     std::unique_ptr<cJSON, decltype(&cJSON_Delete)> request_data(request_data_obj, cJSON_Delete);
     if (request_data == nullptr) {  // 检查请求数据
         error = "无效的请求数据";
@@ -535,7 +535,7 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
         error = "无法生成米家 API 请求签名";
         return false;
     }
-
+    ESP_LOGI("reapi","3");
     std::string rc4_hash;
     std::string encrypted_data;
     std::string encrypted_rc4_hash;
@@ -552,7 +552,7 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
         "data=" + UrlEncode(encrypted_data) + "&rc4_hash__=" + UrlEncode(encrypted_rc4_hash) +
         "&signature=" + UrlEncode(signature) + "&ssecurity=" + UrlEncode(creds.ssecurity) +
         "&_nonce=" + UrlEncode(nonce);
-
+    ESP_LOGI("reapi","4");
     // 组装 Cookies
     std::map<std::string, std::string> cookies = {
         {"cUserId", creds.c_user_id},
@@ -604,7 +604,7 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
         error = "无法设置请求参数";
         return false;
     }
-
+    ESP_LOGI("reapi","5");
     const esp_err_t request_err = esp_http_client_perform(client);
     const int status_code = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
@@ -617,7 +617,7 @@ bool RequestApi(const std::string& uri,  cJSON* request_data_obj, std::string& r
         error = "服务返回 HTTP " + std::to_string(status_code);
         return false;
     }
-
+    ESP_LOGI("reapi","6");
     return DecodeApiResponse(response.body, signed_nonce, response_json, error);
 }
 
@@ -741,23 +741,15 @@ bool RequestResults(std::string& response, cJSON** results){
 
     if (JsonCode(result.get()) != 0) {  // code不是0
         ESP_LOGE("ReqResuTAG", "回应code: %d", JsonCode(result.get())); 
-        return false;
-    }
-    
-    // 改成detach cJSON* result_data = cJSON_GetObjectItemCaseSensitive(result.get(), "result");
-    cJSON* result_data = cJSON_DetachItemFromObjectCaseSensitive(result.get(), "result");
-    // const cJSON* code = cJSON_GetObjectItemCaseSensitive(result.get(), "code");
-    // if (!cJSON_IsNumber(code) || JsonCode(result.get()) != 0 || !cJSON_IsObject(result_data)) {
-    if (JsonCode(result.get()) != 0 || !cJSON_IsObject(result_data)) {
-        std::string message = JsonString(result.get(), "message");
+        /* std::string message = JsonString(result.get(), "message");
         //if (message.empty()) {
         //    message = JsonString(result.get(), "desc");
         //}
-        if (JsonCode(result.get()) && !message.empty()) {
+            if (JsonCode(result.get()) && !message.empty()) {
             //message += "，错误码 " + std::to_string(code->valueint);
             message += "，错误码 " + std::to_string(JsonCode(result.get()));
         }
-        if (message.empty()) {
+                    if (message.empty()) {
             std::unique_ptr<char, decltype(&std::free)> res_string(cJSON_PrintUnformatted(result.get()),
                                                              std::free);
             ESP_LOGW("messageempty", "内容: %s", res_string.get());
@@ -765,16 +757,28 @@ bool RequestResults(std::string& response, cJSON** results){
                     //  (cJSON_IsNumber(code) ? std::to_string(code->valueint) : "未知");
                     std::to_string(JsonCode(result.get()));
         }
-        const std::string code_text =
+                const std::string code_text =
             //cJSON_IsNumber(code) ? std::to_string(code->valueint) : "unknown";
             std::to_string(JsonCode(result.get()));
         ESP_LOGW("RequestResults", "解析Results失败: code=%s, message=%s", code_text.c_str(),
                  message.c_str());
         ESP_LOGW("RequestResults", "内容: %s", result.get()->valuestring);
+                    */
+        std::unique_ptr<char, decltype(&std::free)> res_string(cJSON_PrintUnformatted(result.get()), std::free);
+        ESP_LOGE("ReqResuTAG", "内容: %s", res_string.get()); 
+        return false;
+    }
+    
+    // 改成detach cJSON* result_data = cJSON_GetObjectItemCaseSensitive(result.get(), "result");
+    cJSON* result_data = cJSON_DetachItemFromObjectCaseSensitive(result.get(), "result");
+    // const cJSON* code = cJSON_GetObjectItemCaseSensitive(result.get(), "code");
+    // if (!cJSON_IsNumber(code) || JsonCode(result.get()) != 0 || !cJSON_IsObject(result_data)) {
+    if (!cJSON_IsObject(result_data) && !cJSON_IsArray(result_data) ) {
+        ESP_LOGE("ReqResuTAG", "result_data未解析出物件"); 
         //return std::unexpected(std::move(message));
         return false;
     }
-    *results = result_data; // 改成用detach
+    *results = result_data; // 改成用detach 外层看看有没有记得delete
     //*results = cJSON_Duplicate(result_data, true); 原本用get
     // 假设 void func(cJSON** results)  release用法
    // *results = result_data.release(); 
@@ -1009,22 +1013,31 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
         }
     }
 
-    else if (target_home_id.empty()) {   // 如果id空白就列表  
+    else if (target_home_id.empty()) {   // 如果id空白就家庭列表
         std::string response;
-        if (!RequestHomes(response, error)) {   // Request空白报错
-            return std::unexpected(error.empty() ? "获取所有设备时家庭列表失败" : error);
-            ESP_LOGE("不指定", "获取家庭列表失败: %s", error.c_str());
-        }
         cJSON* result_data = nullptr;
-        if(!RequestResults(response, &result_data)) { // 包含parse 返回result内容,要调用删除函数
-            return std::unexpected("Result内容读取失败");  // 取出得Result空白报错
-        } 
-
+        for (int i = 0; i < 6; i++) {   // 重试5次    
+            if (!RequestHomes(response, error)) {   // Request空白报错
+                ESP_LOGE("不指定", "第%d次时 获取家庭列表失败: %s", i, error.c_str());
+                if (i == 6) {
+                    return std::unexpected(error.empty() ? "获取所有设备时家庭列表失败" : error);
+                }
+                continue;
+            }
+            if(!RequestResults(response, &result_data)) { // 包含parse 返回result内容,要调用删除函数
+                ESP_LOGE("不指定", "第%d次时 家庭列表内容错误: %s", i, error.c_str()); 
+                if (i == 6) {
+                    if(result_data) cJSON_Delete(result_data); 
+                    return std::unexpected("Result内容读取失败");  // 取出得Result空白报错
+                }
+               continue; 
+            } 
+            break;
+        }
         const cJSON* home_list = cJSON_GetObjectItemCaseSensitive(result_data, "homelist");
         if (!cJSON_IsArray(home_list)) {    //如果取出来不是列表报错
             return std::unexpected("获取设备时家庭列表响应缺少 homelist");
         }
-    
         s_make_id_array("id","uid", home_list, homes_id_array); // 可能之后要增加名字 方便用名字直接控制
         cJSON_Delete(result_data); 
     }
@@ -1062,9 +1075,20 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
                 ESP_LOGE("MIJIA", "获取家庭列表失败: %s", error.c_str());
         }*/
         cJSON* result_data = NULL;
-        if(!RequestResults(devices_json, &result_data)) { // 包含parse 返回result内容,要调用删除函数
-            return std::unexpected("设备Result内容读取失败");  // 取出得Result空白报错
-        } 
+
+        for (int i = 0; i < 6; i++) {   // 重试5次 读取result
+            if(!RequestResults(devices_json, &result_data)) { // 包含parse 返回result内容,要调用删除函数
+                ESP_LOGE("设备", "第%d次时 获取设备列表失败", i);  
+                if (i == 6){
+                    cJSON_Delete(result_data);
+                    return std::unexpected("设备Result内容读取失败"); 
+                }
+                vTaskDelay(50);
+                continue;  
+            } 
+            break;
+        }
+
         cJSON* device_info = cJSON_DetachItemFromObject(result_data, "device_info"); //新的
         cJSON_Delete(result_data);  // 循环完删掉,包含device_info (device_obj)    改成deviceinfo
         // cJSON* device_info = cJSON_GetObjectItemCaseSensitive(result_data, "device_info");
@@ -1072,7 +1096,7 @@ ToolResult GetDevicesListInternal(const std::string& target_home_id, const std::
 
         // 下面开始精简
         if (!cJSON_IsArray(device_info)) {  // device_info空白报错
-        return std::unexpected("设备列表响应缺失");
+            return std::unexpected("设备列表响应缺失");
         }
 
         int devsize = cJSON_GetArraySize(device_info);
@@ -1176,6 +1200,181 @@ ToolResult GetDevicesListOnDedicatedStack(const std::string& home_id, const std:
     if (task_status != pdPASS) {
         vSemaphoreDelete(completed);
         return std::unexpected("无法创建米家设备列表任务");
+    }
+
+    xSemaphoreTake(completed, portMAX_DELAY);
+    vSemaphoreDelete(completed);
+    return std::move(context.result);
+}
+
+// ToolResult GetDeviceProps(const std::string& did, const int& siid, const int& piid) {
+ToolResult GetDeviceProps(const std::string& did, const std::string& siid, const std::string& piid) {    
+    
+    std::string response;
+    std::string error;
+    // ESP_LOGI("设备信息", "ssss");
+    //int siidn = atoi(siid);
+    int siidn = std::stoi(siid);
+    int piidn = std::stoi(piid);
+    //int piidn = atoi(piid);
+    ESP_LOGI("设备信息", "did: %s, siid: %d, piid: %d", did.c_str(), siidn, piidn);
+    static constexpr char kUri[] = "/miotspec/prop/get";
+    cJSON *paramsl = cJSON_CreateArray();
+    cJSON* request_data = cJSON_CreateObject(); // 在requestApi声明过删除参数
+    cJSON* params = cJSON_CreateObject();
+    //cJSON *params = cJSON_AddObjectToObject(request_data, "params");
+    ESP_LOGI("设备信息","2");
+    if (params == nullptr || !cJSON_AddStringToObject(params, "did", did.c_str()) ||
+        !cJSON_AddNumberToObject(params, "siid", (double)siidn) ||
+        !cJSON_AddNumberToObject(params, "piid", (double)piidn)) {
+        if (params) cJSON_Delete(params);
+        error = "无法创建Params";
+        return false;
+    }
+    cJSON_AddItemToArray(paramsl, params);  // [{"did":"2160029855","siid":2,"piid":1}]
+    if (request_data == nullptr || !cJSON_AddItemToObject(request_data, "params", paramsl) ||
+        !cJSON_AddNumberToObject(request_data, "datasource", 1)) {
+        ESP_LOGI("设备信息","4");
+        if (request_data) cJSON_Delete(request_data);
+        error = "无法创建设备状态请求";
+        return false;
+    }
+    
+    char *json_string = cJSON_PrintUnformatted(request_data);
+    ESP_LOGI("设备信息", "JSON Output: %s", json_string);
+    free(json_string);
+
+    if(!RequestApi(kUri, request_data, response, error)){ // 获取状态
+        // error = "设备状态请求失败";
+        return std::unexpected(error.empty() ? "设备状态请求失败" : error);
+    }
+    ESP_LOGI("设备信息","6");
+    cJSON* result_data = nullptr;     // 这个需要记得删除
+    RequestResults(response, &result_data); // 取出result
+    if(!result_data){   // 确保取出不是空白
+        return std::unexpected("设备状态获取result失败");  
+    } // 包含parse 返回result内容
+         
+    cJSON *status = cJSON_GetArrayItem(result_data, 0);
+    const cJSON* value = cJSON_GetObjectItemCaseSensitive(status, "value");
+
+    if (value == NULL) {    // value空白
+        ESP_LOGW(TAG, "状态空白");
+        cJSON_Delete(result_data);
+        return std::unexpected("返回状态无效");
+    }
+
+    std::string result_str;
+    bool success = false;
+    // 类型判断与转换
+    if (cJSON_IsString(value)) {
+        // 字符串：直接拷贝
+        if (value->valuestring) {
+            result_str = std::string(value->valuestring);
+            success = true;
+            ESP_LOGI(TAG, "Type is String: %s", result_str.c_str());
+        } else {
+            ESP_LOGW(TAG, "String value is NULL");
+        }
+    } 
+
+    else if (cJSON_IsNumber(value)) {
+        // 数字：转换为字符串
+        // 注意：cJSON 不区分 int/float，这里简单使用 sprintf 或 to_string
+        // 如果需要高精度浮点，请使用 snprintf 和 %.lf
+        /* 是不是整数的判断,决定是整数不需要
+        char buffer[32];
+        if (value->valuedouble == (int)value->valuedouble) {
+             // 看起来像整数
+             snprintf(buffer, sizeof(buffer), "%d", value->valueint);
+        } else {
+             // 浮点数
+             snprintf(buffer, sizeof(buffer), "%.2f", value->valuedouble);
+        }*/
+        if (value->valueint) {
+            result_str = std::to_string(value->valueint);
+            success = true;
+            ESP_LOGI(TAG, "Type is Number: %s", result_str.c_str());
+        } else {
+            ESP_LOGW(TAG, "Number value is NULL");
+        }
+    } 
+   
+    else if (cJSON_IsBool(value)) {
+        // 布尔值：转换为 "true" 或 "false"
+        result_str = value->valueint ? "true" : "false";
+        success = true;
+        ESP_LOGI(TAG, "Type is Bool: %s", result_str.c_str());
+    } 
+    cJSON_Delete(result_data);
+    if (success) {
+        return result_str;
+    } else {
+        return std::unexpected("不支持的值类型或解析失败");
+    }
+    /*
+        else if (cJSON_IsNull(value)) {
+        result_str = "null";
+        success = true;
+        ESP_LOGI(TAG, "Type is Null");
+    }
+    else {
+        ESP_LOGW(TAG, "Unknown type: %d", value->type);
+    }
+        */
+   
+    /* 1. 判断是否为字符串
+    if (cJSON_IsString(value)) {
+        ESP_LOGI(TAG, "Type is String: %s", value->valuestring);
+        return std::string(value->valuestring);
+    }
+    // 2. 判断是否为数字 (cJSON 不区分 int 和 float，统一为 Number)
+    else if (cJSON_IsNumber(value)) {
+        ESP_LOGI(TAG, "Type is Number: %d", value->valueint);
+        // 执行数字相关逻辑
+    }
+    // 3. 判断是否为布尔值
+    else if (cJSON_IsBool(value)) {
+        ESP_LOGI(TAG, "Type is Bool: %s", value->valueint ? "true" : "false");
+        // 执行布尔相关逻辑
+    }
+    else {
+        ESP_LOGW(TAG, "Unknown type");
+    }*/
+//std::to_string((long long)h_uid->valuedouble).c_str());
+//    std::unique_ptr<char, decltype(&std::free)> homes_string(cJSON_PrintUnformatted(slim_homes_array.get()),
+//                                                             std::free);
+//return std::string(homes_string.get());
+}
+
+ToolResult GetDevicePropsOnDedicatedStack(const std::string& did, const std::string& siid, const std::string& piid) {
+    struct TaskContext {
+        std::string did;
+        std::string siid;
+        std::string piid;
+        SemaphoreHandle_t completed;
+        ToolResult result;
+    };
+
+    SemaphoreHandle_t completed = xSemaphoreCreateBinary();
+    if (completed == nullptr) {
+        return std::unexpected("无法创建米家设备状态任务同步对象");
+    }
+
+    TaskContext context{did, siid, piid, completed, std::unexpected("米家设备状态任务未完成")};
+    const BaseType_t task_status = xTaskCreate(
+        [](void* arg) {
+            auto* context = static_cast<TaskContext*>(arg);
+            context->result = GetDeviceProps(context->did, context->siid, context->piid);
+            ESP_LOGI(TAG, "Mijia Prop task stack remaining: %u bytes",
+                     static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            xSemaphoreGive(context->completed);
+            vTaskDelete(nullptr);
+        },
+        "mijia_prop", 24576, &context, 4, nullptr);
+    if (task_status != pdPASS) {
+        vSemaphoreDelete(completed);
+        return std::unexpected("无法创建米家设备状态任务");
     }
 
     xSemaphoreTake(completed, portMAX_DELAY);
@@ -1629,6 +1828,26 @@ void InitializeMojiMijiaTool(Display* display) {
         });
 
     McpServer::GetInstance().AddTool(
+        "self.mijia.get_device_prop",
+        "获取米家设备的状态,三个必要参数依次为did,siid,piid",
+        []() {
+            PropertyList p;
+            p.AddProperty(Property("did", kPropertyTypeString, std::string("2160029855")));
+            p.AddProperty(Property("siid", kPropertyTypeString, std::string("2")));
+            p.AddProperty(Property("piid", kPropertyTypeString, std::string("1")));
+            return p;
+        }(), // 这是一个立即执行的 Lambda，直接返回构造好的 PropertyList
+
+        [](const PropertyList&  args) -> ToolResult {
+            //std::string did = args[0].c_str(); 
+            std::string did = args["did"].value<std::string>();
+            std::string siid = args["siid"].value<std::string>();
+            std::string piid = args["piid"].value<std::string>();
+            // ESP_LOGI("设备s信息", "did: %s, siid: %s, piid: %s", did.c_str(), siid.c_str(), piid.c_str());
+            return GetDevicePropsOnDedicatedStack(did, siid, piid); 
+        });
+
+    McpServer::GetInstance().AddTool(
         "self.mijia.refresh",
         "刷新米家登录状态,会更新登录token"
         "如果获取家庭列表或是设备列表时提示登录错误,或是服务返回HTTP400错误可以刷新登录状态"
@@ -1656,3 +1875,11 @@ void InitializeMojiMijiaTool(Display* display) {
 //下一步就是列出设备可操控功能 
 //跟操控设备
 //to_string(double) 可能产生多余小数位，视业务需求可改用 snprintf
+
+/* 用于‌参数定义/校验‌（类似 JSON Schema）
+PropertyList({
+    {"did", Property::Type::String, Property::Required::Yes},
+    {"siid", Property::Type::Int, Property::Required::Yes},
+    {"piid", Property::Type::Int, Property::Required::Yes}
+})
+*/
